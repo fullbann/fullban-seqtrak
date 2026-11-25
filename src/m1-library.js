@@ -128,33 +128,36 @@ const M1Lib = (() => {
       name: progName(p), mode,                     // 0 single, 1 double, 2 drums
       ms1: p[12], oct1: s8(p[13]), ms2: p[14], mono: !!(p[11] & 1),
       cutoff: p[O1 + 8], egInt: p[O1 + 11],
-      vdf: { at: p[O1 + 15], al: s8(p[O1 + 16]), dt: p[O1 + 17], st: p[O1 + 19], sl: s8(p[O1 + 20]), rt: p[O1 + 21] },
+      vdf: { at: p[O1 + 15], al: s8(p[O1 + 16]), dt: p[O1 + 17], bp: s8(p[O1 + 18]), st: p[O1 + 19], sl: s8(p[O1 + 20]), rt: p[O1 + 21], rl: s8(p[O1 + 22]) },
       level: p[O1 + 23],
-      vda: { at: p[O1 + 29], dt: p[O1 + 31], sl: p[O1 + 34], rt: p[O1 + 35] },
+      vda: { at: p[O1 + 29], al: p[O1 + 30], dt: p[O1 + 31], bp: p[O1 + 32], st: p[O1 + 33], sl: p[O1 + 34], rt: p[O1 + 35] },
       // effect block at byte 38 (as M-One reads it): types, FX1 L/R + FX2 L/R balance, switches in byte 8
       fx: { type: [p[38], p[39]], bal: [Math.round((p[40] + p[41]) / 2), Math.round((p[42] + p[43]) / 2)], on: [!!(p[46] & 0x03), !!(p[46] & 0x0C)] },
     };
   }
-  // M1 times run 0-99 (longer = bigger); the SEQTRAK's are offsets -64..+63 on the sound's own times.
-  // These curves are a starting approximation, tuned by ear later.
-  const tOff = t => clamp(Math.round((t - 30) * 0.9), -64, 63);
-  const sOff = (v, top) => clamp(Math.round((v - top) * 0.64), -64, 63);
+  // The M1 program's filter and amp envelopes are written to the SEQTRAK elements themselves (03e: 41 ep / 42 ep),
+  // not as offsets: the M1 user sounds are stored with a flat envelope, so offsets had nothing to work on.
+  // M1 times and levels run 0-99 (EG levels -99..+99); Yamaha times 0-127 (bigger = longer), levels 0-127,
+  // filter EG levels -128..+127 around 128. Curves are straight scalings - tune by ear.
+  const T = t => clamp(Math.round(t * 1.28), 0, 127);
+  const L = v => clamp(Math.round(v * 1.283), 0, 127);
+  const FL = v => clamp(128 + Math.round(v * 1.28), 0, 255);
   function paramsFor(d, part) {
-    const P = SEQTRAK.P;
+    const P = SEQTRAK.P, E = SEQTRAK.E;
     const out = [];
-    const sx = (def, v) => out.push([def, clamp(Math.round(v), def.min ?? 0, def.max ?? 127)]);
-    sx(P.cutoff(part), 64 + clamp(Math.round((d.cutoff - 99) * 0.65), -64, 63));
-    sx(P.fegDepth(part), 64 + clamp(Math.round(d.egInt * 0.63), -64, 63));
-    sx(P.fegA(part), 64 + tOff(d.vdf.at));
-    sx(P.fegD(part), 64 + tOff(d.vdf.dt));
-    sx(P.fegS(part), 64 + clamp(Math.round(d.vdf.sl * 0.64), -64, 63));
-    sx(P.fegR(part), 64 + tOff(d.vdf.rt));
-    sx(P.ampAttack(part), 64 + tOff(d.vda.at));
-    sx(P.ampDecRel(part), 64 + tOff(d.vda.dt));
-    sx(P.aegS(part), 64 + sOff(d.vda.sl, 99));
-    sx(P.aegR(part), 64 + tOff(d.vda.rt));
-    sx(P.noteShift(part), 64 + 12 * clamp(d.oct1, -2, 2));
-    sx(P.monoPoly(part), d.mono ? 0 : 1);
+    const put = (def, v) => out.push([def, clamp(Math.round(v), def.min ?? 0, def.max ?? 127)]);
+    put(E.cutoff(part), d.cutoff * 1.28);
+    put(E.fegDepth(part), 64 + d.egInt * 0.63);
+    put(E.fegAttack(part), T(d.vdf.at)); put(E.fegAtkLvl(part), FL(d.vdf.al));
+    put(E.fegDecay(part), T(d.vdf.dt));  put(E.fegD1Lvl(part), FL(d.vdf.bp));
+    put(E.fegDecay2(part), T(d.vdf.st)); put(E.fegD2Lvl(part), FL(d.vdf.sl));
+    put(E.fegRelease(part), T(d.vdf.rt)); put(E.fegRelLvl(part), FL(d.vdf.rl));
+    put(E.aegAttack(part), T(d.vda.at)); put(E.aegAtkLvl(part), L(d.vda.al));
+    put(E.aegDecay(part), T(d.vda.dt));  put(E.aegD1Lvl(part), L(d.vda.bp));
+    put(E.aegDecay2(part), T(d.vda.st)); put(E.aegSustain(part), L(d.vda.sl));
+    put(E.aegRelease(part), T(d.vda.rt));
+    put(P.noteShift(part), 64 + 12 * clamp(d.oct1, -2, 2));
+    put(P.monoPoly(part), d.mono ? 0 : 1);
     return out;
   }
 

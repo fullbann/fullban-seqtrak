@@ -100,6 +100,42 @@ const SEQTRAK = (() => {
     fmFback:   p => sound(p, 0x05, 'FEEDBACK', { rxcc: 119 }),
   };
 
+  // ---- Element level (03e): absolute values written to all 8 elements of a part at once ----
+  // The M1 user sounds are built with a flat amp envelope (decay times 0, levels 7F - read on the unit 25 Nov),
+  // so the sound-level OFFSETS (31 1p 2C-2F, 00) have nothing to work on. These write the envelope itself.
+  // addr = element 0 (used to read the value back), fan = the same parameter on every element.
+  function elem(hi, p, lo, label, extra) {
+    const fan = []; for (let e = 0; e < 8; e++) fan.push([hi, (e << 4) | p, lo]);
+    return Object.assign({ kind: 'sx', addr: fan[0], fan, label, min: 0, max: 127, def: 0, fmt: fmt.raw }, extra || {});
+  }
+  // two-byte values (MSB bit 7, LSB bits 6-0)
+  const enc8 = x => [(x >> 7) & 1, x & 0x7F];
+  const dec8 = d => ((d[0] & 1) << 7) | (d[1] & 0x7F);
+  const E = {
+    aegAttack:  p => elem(0x41, p, 0x33, 'ATTACK'),
+    aegDecay:   p => elem(0x41, p, 0x34, 'DECAY', { def: 64 }),
+    aegDecay2:  p => elem(0x41, p, 0x35, 'DECAY 2', { def: 64 }),
+    aegRelease: p => elem(0x41, p, 0x37, 'RELEASE', { def: 0x28 }),
+    aegAtkLvl:  p => elem(0x41, p, 0x39, 'ATK LVL', { def: 127 }),
+    aegD1Lvl:   p => elem(0x41, p, 0x3A, 'BREAK', { def: 127 }),
+    aegSustain: p => elem(0x41, p, 0x3B, 'SUSTAIN', { def: 127 }),
+    // filter cutoff 0-255 at 42 ep 01 (two bytes); the knob runs 0-127
+    cutoff:     p => elem(0x42, p, 0x01, 'CUTOFF', { def: 127, enc: v => enc8(Math.min(255, v * 2 + (v > 0 ? 1 : 0))), dec: d => dec8(d) >> 1 }),
+    reso:       p => elem(0x42, p, 0x05, 'RESO'),
+    fegAttack:  p => elem(0x42, p, 0x0F, 'F.ATTACK'),
+    fegDecay:   p => elem(0x42, p, 0x10, 'F.DECAY', { def: 64 }),
+    fegDecay2:  p => elem(0x42, p, 0x11, 'F.DECAY 2', { def: 64 }),
+    fegRelease: p => elem(0x42, p, 0x12, 'F.RELEASE', { def: 0x50 }),
+    // FEG levels -128..+127 around 128 (two bytes): value here is 0-255
+    fegAtkLvl:  p => elem(0x42, p, 0x15, 'F.ATK LVL', { max: 255, def: 255, enc: enc8, dec: dec8 }),
+    fegD1Lvl:   p => elem(0x42, p, 0x17, 'F.BREAK', { max: 255, def: 255, enc: enc8, dec: dec8 }),
+    fegD2Lvl:   p => elem(0x42, p, 0x19, 'F.SUSTAIN', { max: 255, def: 255, enc: enc8, dec: dec8 }),
+    fegRelLvl:  p => elem(0x42, p, 0x1B, 'F.REL LVL', { max: 255, def: 128, enc: enc8, dec: dec8 }),
+    fegDepth:   p => elem(0x42, p, 0x1D, 'FILTER EG', { def: 64, bipolar: true, fmt: fmt.bi64 }),
+  };
+  // project scale notes: 30 4D (scale << 4 | pad), 7 pads per scale (verified on hardware in seqtrak-docs)
+  const SCALE_NOTE = (scale, pad) => [0x30, 0x4D, (scale << 4) | pad];
+
   // Master: speaker master volume 00 00 00 (verified on hardware)
   const MASTER_VOLUME = { kind: 'sx', addr: [0x00, 0x00, 0x00], label: 'SPEAKER', min: 0, max: 127, def: 100, hw: true, fmt: fmt.raw };
   // Headphone/line master 00 00 01 (written + read back on the unit 25 Nov), plug status 01 10 07 (1 = plugged)
@@ -178,7 +214,8 @@ const SEQTRAK = (() => {
   // Send for a param definition: SysEx write, plus its mirror CC where one is documented
   function messagesFor(def, value) {
     if (def.kind === 'cc') return [buildCC(def.ch, def.cc, value)];
-    return [buildParam(def.addr, value)];
+    const data = def.enc ? def.enc(value) : [value];
+    return (def.fan || [def.addr]).map(a => buildParamData(a, data));
   }
 
   // Keys used by the sync registry
@@ -268,7 +305,7 @@ const SEQTRAK = (() => {
   function buildDxOpMsg(_dev, o, key, v) { const f = DX_OP[key]; return f ? buildParam(f(o).addr, v) : null; }
 
   return {
-    TRACKS, P, MASTER_VOLUME, HP_VOLUME, HP_PLUG, CURRENT_PART, CURRENT_SOUND, SCALE, KEY, CHORD_NOTE, INS_TYPE, DX_COMMON, DX_OP, LFO_WAVES, fmt,
+    TRACKS, P, E, SCALE_NOTE, MASTER_VOLUME, HP_VOLUME, HP_PLUG, CURRENT_PART, CURRENT_SOUND, SCALE, KEY, CHORD_NOTE, INS_TYPE, DX_COMMON, DX_OP, LFO_WAVES, fmt,
     buildParam, buildParamData, buildRequest, unpack7, decodeName, soundNameAddr, loadSound,
     FX, fxTypeName, STEP, ROLL, TYPE_ADDR, TYPE_NAMES, DEFAULT_TYPE, PATTERN_STEPS, PATTERN_MODE, PATTERN_SELECT, RECORDING, buildCC, messagesFor, keyOf, parseParamChange,
     buildDxCommonMsg, buildDxOpMsg,

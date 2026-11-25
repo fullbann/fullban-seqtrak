@@ -92,7 +92,7 @@ const MIDIManager = (() => {
   function msgKey(d) {
     // only single-value Parameter Changes may replace an older queued one. Sequencer edits (add/delete note: 2x, 7x)
     // and requests share an address but are separate events - every one must go out.
-    if (d[0] === 0xF0 && d.length === 11 && (d[2] & 0xF0) === 0x10 && !isSeqAddr(d[6])) return 'sx' + d[2] + ':' + d[6] + ':' + d[7] + ':' + d[8];
+    if (d[0] === 0xF0 && d.length >= 11 && d.length <= 13 && (d[2] & 0xF0) === 0x10 && !isSeqAddr(d[6])) return 'sx' + d[2] + ':' + d[6] + ':' + d[7] + ':' + d[8];
     if ((d[0] & 0xF0) === 0xB0) return 'cc' + d[0] + ':' + d[1];
     return null;
   }

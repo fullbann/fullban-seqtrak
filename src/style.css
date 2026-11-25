@@ -936,7 +936,7 @@ button { touch-action: manipulation; }
 .m1-hero-sub { font-size: 10px; font-weight: 800; letter-spacing: 3px; color: #7fb8e6; }
 .m1-hero-sub b { color: #40c8e0; }
 .m1-hero-photo { position: absolute; right: 0; top: 0; bottom: 0; width: 72%; z-index: 1;
-  background: url('m1-photo.jpg') 75% 48% / cover no-repeat; opacity: .85; filter: saturate(.9) contrast(1.05);
+  background: url('m1-art.png') 75% 48% / cover no-repeat; opacity: .85; filter: saturate(.9) contrast(1.05);
   -webkit-mask-image: linear-gradient(90deg, transparent 0%, rgba(0,0,0,.55) 30%, #000 60%), linear-gradient(0deg, transparent 0%, #000 22%, #000 80%, transparent 100%);
   -webkit-mask-composite: source-in; mask-composite: intersect;
   mask-image: linear-gradient(90deg, transparent 0%, rgba(0,0,0,.55) 30%, #000 60%), linear-gradient(0deg, transparent 0%, #000 22%, #000 80%, transparent 100%); }
@@ -1054,3 +1054,51 @@ button { touch-action: manipulation; }
 #m1-lib .lib-body { min-height: 200px; }
 #m1-lib .m1-fx-row { flex-shrink: 0; }
 @media (pointer: coarse) { .pad64 .seq-step { min-height: 44px; } .pad { min-height: 62px; } .lg-ms button { padding: 6px 0; } #page-launch .lr-clip { min-height: 34px; } }
+
+/* ===== v9: clips under the mixer, bigger sequencer, OXI-style modes, playhead + halo, library categories, M1 art ===== */
+.mix-left { flex-direction: column; gap: 6px; }
+.clip-grid { display: flex; flex-direction: column; gap: 3px; flex-shrink: 0; }
+.cg-row { display: flex; gap: 4px; }
+.cg-row > * { flex: 1 1 0; min-width: 0; }
+.cg-row .lr-clip { min-height: 25px; font-size: 10px; }
+.cg-row .lr-clip.on::after { display: none; }
+.cg-row .lg-scene { margin-left: 4px; font-size: 9px; padding: 0; white-space: nowrap; }
+.cg-row .lg-scene b { font-size: 11px; }
+.fb-fader { min-height: 70px; }
+.seq-tracks { display: grid; grid-template-columns: repeat(11, minmax(0, 1fr)); gap: 3px; flex-shrink: 0; }
+.seq-top { flex-wrap: wrap; row-gap: 6px; }
+.seq-mode { padding-left: 10px; padding-right: 10px; }
+.pad64 .seq-step { min-height: 44px; height: clamp(50px, 10.2vh, 120px); }
+.pad64 .seq-step span { font-size: 11px; }
+.pad { min-height: 64px; }
+.pad.chord b { font-size: 15px; }
+/* the line of colour on the pad being played, and halos */
+.seq-step u, .mt-cell u { position: absolute; left: 12%; right: 12%; bottom: 5px; height: 4px; border-radius: 2px; background: transparent; pointer-events: none; }
+.seq-step.playing, .mt-cell.playing { border-color: #fff; box-shadow: 0 0 10px color-mix(in srgb, var(--tk-color, var(--kc)) 70%, transparent); }
+.seq-step.playing u, .mt-cell.playing u { background: #fff; box-shadow: 0 0 10px 3px var(--tk-color, var(--kc)); }
+.seq-step.on.playing, .mt-cell.on.playing { filter: brightness(1.35); }
+@keyframes fbhalo { 0% { box-shadow: 0 0 0 0 #fff, 0 0 30px 10px var(--tk-color, var(--kc)); } 100% { box-shadow: 0 0 0 16px transparent, 0 0 0 0 transparent; } }
+.seq-step.hit, .mt-cell.hit { animation: fbhalo .45s ease-out; z-index: 2; }
+@keyframes fbpress { 0% { box-shadow: 0 0 0 0 rgba(255,255,255,.9), 0 0 22px 6px var(--tk-color, var(--kc, #2d8cf0)); filter: brightness(1.6); } 100% { box-shadow: 0 0 0 12px transparent, 0 0 0 0 transparent; filter: none; } }
+.seq-step.pressed, .pad.pressed, .mt-cell.pressed { animation: fbpress .42s ease-out; z-index: 2; }
+/* multitrack */
+.mt { display: flex; flex-direction: column; gap: 4px; }
+.mt-row { display: grid; grid-template-columns: 124px repeat(var(--cols), minmax(0, 1fr)); gap: 3px; }
+.mt-name { display: flex; flex-direction: column; justify-content: center; align-items: flex-start; padding: 2px 8px; border-radius: 6px; background: #0f151d; border: none; border-left: 4px solid var(--kc); color: #fff; cursor: pointer; min-width: 0; }
+.mt-name b { font-size: 11px; font-weight: 900; }
+.mt-name small { font-size: 10px; color: #a9b9ca; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mt-cell { position: relative; height: clamp(36px, 7vh, 66px); border-radius: 6px; border: 1px solid #1f2b3a; background: linear-gradient(180deg, #121a24, #0b1016); cursor: pointer; padding: 0; }
+.mt-cell.beat { border-color: #3a4d66; background: linear-gradient(180deg, #18222f, #0e141c); }
+.mt-cell.on { background: linear-gradient(180deg, var(--kc), color-mix(in srgb, var(--kc) 60%, #000)); border-color: var(--kc); box-shadow: 0 0 10px color-mix(in srgb, var(--kc) 45%, transparent); }
+.mt-cell.unknown { opacity: .55; }
+.mt-cell.off { opacity: .22; cursor: default; }
+.sto-ctl { align-items: center; }
+.sto-roll { background: linear-gradient(180deg, #ffb020, #d07a00); border: 1px solid #ffd27a; color: #111; font-weight: 900; letter-spacing: 1.5px; font-size: 12px; padding: 10px 18px; border-radius: 7px; cursor: pointer; }
+.pr-grid { position: relative; }
+.pr-playline { position: absolute; top: 0; bottom: 0; width: 2px; background: #fff; box-shadow: 0 0 8px 1px #fff; pointer-events: none; z-index: 3; }
+.lib-cats { flex-shrink: 0; }
+/* M-One banner: clean drawing instead of the cut-out photo */
+.m1-hero-photo, .m1-edit-row .m1-hero-photo { background: url('m1-art.png') right 14px center / auto 80% no-repeat; opacity: 1; filter: drop-shadow(0 10px 16px rgba(0,0,0,.65));
+  -webkit-mask-image: none; mask-image: none; transform: perspective(700px) rotateX(26deg) rotateZ(-3deg); transform-origin: 75% 50%; }
+.m1-hero::after { display: none; }
+@media (pointer: coarse) { .cg-row .lr-clip { min-height: 30px; } .pad64 .seq-step { min-height: 48px; } }

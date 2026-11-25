@@ -1,5 +1,5 @@
 /* ============================================
-   FULLBAN SEQ-TRAK — Main App v8
+   FULLBAN SEQ-TRAK — Main App v9
    MAIN MIX (mixer + sound), LAUNCH + SEQ (clips, 64 pads, chords, piano roll), DX, FX, M-ONE
    ============================================ */
 
@@ -162,6 +162,7 @@
     const keys = [SEQTRAK.keyOf(def)];
     if (def.kind === 'sx' && def.rxcc !== undefined) keys.push(`cc:${def.rxch ?? (def.addr[1] & 0x0F)}:${def.rxcc}`);
     if (def.rd) { w._rdKey = sxKey(def.rd); w._rdConv = def.rdConv; keys.push(w._rdKey); }
+    if (def.dec) { w._rdKey = keys[0]; w._rdConv = def.dec; }
     keys.forEach(k => { if (!REG.has(k)) REG.set(k, new Set()); REG.get(k).add(w); });
     w._keys = keys;
     return w;
@@ -204,16 +205,20 @@
     const h = def.addr[0], m = def.addr[1];
     if (h === 0x31) return m & 0x0F;
     if (h === 0x48 || h === 0x49) return 9;
+    if (h === 0x41 || h === 0x42) return m & 0x0F;          // element parameters: mid = element << 4 | part
     return null;
   }
   function recordEdit(def, v) {
     const p = partOfDef(def); if (p == null) return;
     const slot = editSlot(p); if (!slot) return;
-    (soundEdits[slot] = soundEdits[slot] || {})[SEQTRAK.keyOf(def)] = v;
+    const hex = m => Array.from(m).map(b => b.toString(16).padStart(2, '0')).join('');
+    if (def.fan || def.enc) (soundEdits[slot] = soundEdits[slot] || {})['raw:' + SEQTRAK.keyOf(def)] = SEQTRAK.messagesFor(def, v).map(hex);
+    else (soundEdits[slot] = soundEdits[slot] || {})[SEQTRAK.keyOf(def)] = v;
     saveEdits(); paintEdited(p);
   }
   function sendKey(key, v) {
-    if (key.startsWith('sx:')) MIDIManager.send(SEQTRAK.buildParam([0, 1, 2].map(i => parseInt(key.slice(3 + 2 * i, 5 + 2 * i), 16)), v));
+    if (key.startsWith('raw:')) v.forEach(h => MIDIManager.send(Uint8Array.from(h.match(/../g).map(x => parseInt(x, 16)))));
+    else if (key.startsWith('sx:')) MIDIManager.send(SEQTRAK.buildParam([0, 1, 2].map(i => parseInt(key.slice(3 + 2 * i, 5 + 2 * i), 16)), v));
     else { const k = key.split(':'); MIDIManager.send(SEQTRAK.buildCC(+k[1], +k[2], v)); }
   }
   const hasEdits = p => { const e = soundEdits[editSlot(p)]; return !!e && Object.keys(e).length > 0; };
@@ -685,7 +690,7 @@
     soundNames[p] = name;
     document.querySelectorAll(`.track-chip[data-track="${p}"]`).forEach(c => { c.title = name; const sm = c.querySelector('small'); if (sm) sm.textContent = name; });
     const ln = document.querySelector(`.lg-track[data-track="${p}"] small`); if (ln) ln.textContent = name || '—';
-    if (typeof seqMode !== 'undefined' && seqMode === 'step' && typeof isDrumPart === 'function' && isDrumPart(p) && isDrumPart(seqTrack)) { const pr = seqBody.querySelector('.pad-row'); if (pr) pr.replaceWith(padRow()); }
+    if (typeof seqBody !== 'undefined') { const pr = seqBody.querySelector('.pad-row'); if (pr && pr.querySelector('.pad.drum')) pr.replaceWith(padRow()); const mn = seqBody.querySelector(`.mt-row[data-track="${p}"] .mt-name small`); if (mn) mn.textContent = name; }
     const s = stripsEl.querySelector(`.strip[data-track="${p}"] .strip-snd`);
     if (s) { s.textContent = name; s.title = name; }
     if (p === selTrack) showSoundName();
@@ -843,7 +848,7 @@
   const seqTrackChips = document.getElementById('seq-track-chips');
   const seqMsg = document.getElementById('seq-msg');
   const seqBody = document.getElementById('seq-body');
-  let seqTrack = 0, seqLen = 16, playing = false, recOn = false, seqMode = 'step';
+  let seqTrack = 0, seqLen = 16, playing = false, recOn = false, seqMode = 'mono';
   const patSel = new Array(11).fill(0);
   const steps = Array.from({ length: 11 }, () => new Array(128).fill(null));   // drum parts: null unknown, false empty, {note,vel,gate}
   const rollEvents = Array.from({ length: 11 }, () => null);                  // roll parts: [{idx,time,note,vel,gate}]
@@ -920,6 +925,7 @@
       if (ps && ps.length) patSel[p] = ps[0];
       const ln = await askRetry(SEQTRAK.PATTERN_STEPS(p, patSel[p]), 450, 2);
       if (ln && ln.length >= 2) seqLen = Math.max(1, Math.min(128, (ln[0] << 7) | ln[1]));
+      trackLen[p] = seqLen;
     }
     document.querySelectorAll('.pattern-btn').forEach(b => b.classList.toggle('active', +b.dataset.pattern === patSel[p]));
     document.querySelectorAll('.len-btn').forEach(b => b.classList.toggle('active', +b.dataset.len === seqLen));
@@ -936,33 +942,40 @@
     unreg(seqBody);
     seqBody.innerHTML = '';
     seqBody.dataset.mode = seqMode;
-    if (seqMode === 'step') renderStep();
-    else if (seqMode === 'chords') renderChords();
+    if (seqMode === 'mono' || seqMode === 'poly') renderStep();
+    else if (seqMode === 'chord') renderChords();
+    else if (seqMode === 'multi') renderMulti();
+    else if (seqMode === 'stoch') renderStoch();
     else renderRoll();
+    paintPlayhead();
   }
 
   // ======================= STEP =======================
   let pickNote = 60;
-  function renderStep() {
-    const p = seqTrack, tk = SEQTRAK.TRACKS[p], drum = isDrumPart(p);
+  // the 64 pads, shared by MONO / POLY / CHORD / STOCHASTIC
+  function makePads(onTap) {
+    const p = seqTrack, tk = SEQTRAK.TRACKS[p];
     const grid = document.createElement('div'); grid.className = 'pad64';
     for (let s = 0; s < 64; s++) {
       const btn = document.createElement('button');
       btn.className = 'seq-step' + (s % 4 === 0 ? ' beat-start' : '') + (s % 16 === 0 ? ' bar-start' : '') + (s >= seqLen ? ' off' : '');
       btn.dataset.step = s;
       btn.style.setProperty('--tk-color', tk.color);
-      btn.innerHTML = `<i>${s + 1}</i><span></span>`;
-      btn.onclick = () => { if (s < seqLen) toggleStep(s); };
+      btn.innerHTML = `<i>${s + 1}</i><span></span><u></u>`;
+      btn.onclick = () => { if (s < seqLen) onTap(s); };
       grid.appendChild(btn);
     }
-    seqBody.appendChild(grid);
+    return grid;
+  }
+  function paintAllSteps() { for (let s = 0; s < Math.min(seqLen, 64); s++) paintStep(seqTrack, s); }
+  function renderStep() {
+    const p = seqTrack, drum = isDrumPart(p);
+    seqBody.appendChild(makePads(toggleStep));
     seqBody.appendChild(padRow());
-    for (let s = 0; s < Math.min(seqLen, 64); s++) paintStep(p, s);
-    if (!seqMsg.textContent || seqMsg.dataset.auto) {
-      seqMsg.dataset.auto = 1;
-      seqMsg.textContent = drum ? 'Tap a pad to add or remove a hit. Bottom row: tap a drum to hear it and switch to it.'
-        : 'Bottom row: pick a note, then tap pads to place it. Tap a lit pad to clear it.';
-    }
+    paintAllSteps();
+    seqMsg.textContent = drum ? 'Tap a pad to add or remove a hit. Bottom row: tap a drum to hear it and switch to it.'
+      : seqMode === 'poly' ? 'POLY: pick notes on the bottom row and stack them on a pad. Tap a pad again with the same note to take that note off.'
+      : 'MONO: pick a note on the bottom row, then tap pads - one note per pad. Tap it again to clear.';
   }
   // bottom row of pads: the drum tracks (drum track selected) or a chromatic octave (synth / DX / sampler)
   function padRow() {
@@ -992,28 +1005,35 @@
     return here.length ? here : false;
   }
   function paintStep(p, s) {
-    if (p !== seqTrack || seqMode !== 'step') return;
-    const b = seqBody.querySelector(`.seq-step[data-step="${s}"]`);
+    const mc = seqBody.querySelector(`.mt-cell[data-track="${p}"][data-step="${s}"]`);
+    if (mc) { const v = steps[p][s]; mc.classList.toggle('on', !!v); mc.classList.toggle('unknown', v === null); }
+    if (p !== seqTrack) return;
+    const b = seqBody.querySelector(`.pad64 .seq-step[data-step="${s}"]`);
     if (!b) return;
     const st = stepContents(p, s);
     b.classList.toggle('on', !!st); b.classList.toggle('unknown', st === null);
-    b.querySelector('span').textContent = (!isDrumPart(p) && st) ? st.map(e => noteName(e.note)).join(' ') : '';
+    let txt = '';
+    if (!isDrumPart(p) && st) txt = st.length > 2 ? chordName(st.map(e => e.note)) : st.map(e => noteName(e.note)).join(' ');
+    b.querySelector('span').textContent = txt;
+  }
+  function toggleDrum(p, s) {
+    const st = steps[p][s];
+    if (st) MIDIManager.send(SEQTRAK.STEP.del(p, s));
+    else MIDIManager.send(SEQTRAK.STEP.add(p, s, 60, 100, TPS));
+    steps[p][s] = st ? false : { note: 60, vel: 100, gate: TPS };
+    paintStep(p, s);
+    setTimeout(() => readStep(p, s), 250);
   }
   function toggleStep(s) {
     const p = seqTrack;
-    if (isDrumPart(p)) {
-      const st = steps[p][s];
-      if (st) MIDIManager.send(SEQTRAK.STEP.del(p, s));
-      else MIDIManager.send(SEQTRAK.STEP.add(p, s, 60, 100, TPS));
-      steps[p][s] = st ? false : { note: 60, vel: 100, gate: TPS };
-      paintStep(p, s);
-      setTimeout(() => readStep(p, s), 250);
-      return;
-    }
+    if (isDrumPart(p)) { toggleDrum(p, s); return; }
     if (rollEvents[p] === null) return;
-    const here = stepContents(p, s);
-    if (here) rollEdit(p, here, []);
-    else rollEdit(p, [], [{ time: s * TPS + 60, note: pickNote, vel: 100, gate: TPS }]);
+    const here = stepContents(p, s) || [];
+    const mine = here.find(e => e.note === pickNote);
+    const add = { time: s * TPS + 60, note: pickNote, vel: 100, gate: TPS };
+    if (seqMode === 'poly') { if (mine) rollEdit(p, [mine], []); else rollEdit(p, [], [add]); }
+    else if (mine && here.length === 1) rollEdit(p, here, []);      // MONO: same note again = clear
+    else rollEdit(p, here, [add]);                                  // MONO: one note per pad
   }
   function previewNotes(notes, ch, ms) {
     notes.forEach(n => MIDIManager.send(new Uint8Array([0x90 | ch, n & 0x7F, 100])));
@@ -1080,10 +1100,11 @@
       set.push(notes);
     }
     chordSets[chordKey(p)] = set;
-    if (seqMode === 'chords' && p === seqTrack) renderSeq();
+    if (seqMode === 'chord' && p === seqTrack) renderSeq();
   }
   // notes a chord pad plays (the project key moves every chord up, like the unit's keys)
   const chordNotes = (p, pad) => (((chordSets[chordKey(p)] || [])[pad]) || []).filter(n => n > 0).map(n => Math.min(127, n + proj.key));
+  let chordEdit = false;
   function renderChords() {
     const p = seqTrack, tk = SEQTRAK.TRACKS[p];
     if (!hasChords(p)) { seqMsg.textContent = 'The SEQTRAK has chords on SYNTH 1, SYNTH 2 and DX - pick one of those tracks.'; return; }
@@ -1093,14 +1114,14 @@
       if (MIDIManager.isConnected()) readChords(p);
       return;
     }
-    seqMsg.textContent = 'These are the 7 chords on the SEQTRAK\'s own keys (CHORD mode). Tap a chord to hear it, then tap a step to put it in the pattern. Tap a chord in the pattern to remove it.';
-    const wrap = document.createElement('div'); wrap.className = 'chd';
+    seqMsg.textContent = 'CHORD: the bottom row is the SEQTRAK\'s own 7 chords. Tap one to hear and pick it, then tap pads to place it. Tap a lit pad to clear it.';
     const ctl = document.createElement('div'); ctl.className = 'chd-ctl';
     // CHORD mode on the unit for this track (31 1p 23 = 2): its keys then play these chords
     const modeDef = SEQTRAK.P.monoPoly(p);
     const modeT = Knob.toggle('CHORD MODE ON UNIT', false, v => sendDef(modeDef, v ? 2 : 1));
     modeT.setValue = v => modeT.setOn(v === 2); modeT.opts = modeDef; modeT.classList.add('knob-wrap'); reg(modeDef, modeT);
     ctl.appendChild(modeT);
+    requestDefs([modeDef]);
     const sel = (label, opts, val, fn) => {
       const l = document.createElement('label'); l.className = 'chd-sel'; l.innerHTML = `<span>${label}</span>`;
       const s = document.createElement('select');
@@ -1110,62 +1131,185 @@
     sel('KEY', NOTE_NAMES.map((n, i) => [i, n]), proj.key, v => { proj.key = +v; cs.key = +v; sendDefRaw(SEQTRAK.KEY, 0x40 + proj.key); renderSeq(); });
     sel('SCALE', [0, 1, 2, 3, 4, 5, 6, 7].map(i => [i, 'SCALE ' + (i + 1)]), proj.scale, v => { proj.scale = +v; sendDefRaw(SEQTRAK.SCALE, proj.scale); renderSeq(); });
     sel('LENGTH', [1, 2, 4, 8, 16].map(n => [n, n + (n === 1 ? ' STEP' : ' STEPS')]), cs.len, v => { cs.len = +v; saveCs(); });
+    const edT = Knob.toggle('EDIT CHORD NOTES', chordEdit, v => { chordEdit = v; renderSeq(); }); ctl.appendChild(edT);
     const clr = document.createElement('button'); clr.className = 'chd-clear'; clr.textContent = 'CLEAR PATTERN';
     clr.onclick = () => { if (confirm('Clear every note on this track\'s pattern?')) rollEdit(p, rollEvents[p] || [], []); };
     ctl.appendChild(clr);
-    wrap.appendChild(ctl);
-    // the 7 chord pads
-    const pads = document.createElement('div'); pads.className = 'chd-pads';
+    seqBody.appendChild(ctl);
+    if (chordEdit) {
+      const ed = document.createElement('div'); ed.className = 'chd-edit';
+      ed.innerHTML = `<span class="chd-lbl">CHORD ${chordPad + 1} NOTES</span>`;
+      set[chordPad].forEach((raw, n) => {
+        const box = document.createElement('div'); box.className = 'chd-note' + (raw ? '' : ' off');
+        const write = v => {
+          set[chordPad][n] = v;
+          MIDIManager.send(SEQTRAK.buildParam(SEQTRAK.CHORD_NOTE(p, proj.scale, chordPad, n), v));
+          const now = chordNotes(p, chordPad); if (now.length) previewNotes(now, p, 500);
+          renderSeq();
+        };
+        const mk = (t, fn) => { const x = document.createElement('button'); x.textContent = t; x.onclick = fn; box.appendChild(x); return x; };
+        mk('−', () => write(Math.max(0x24, (raw || 0x3C) - 1)));
+        const nm = document.createElement('b'); nm.textContent = raw ? noteName(Math.min(127, raw + proj.key)) : 'OFF'; box.appendChild(nm);
+        mk('+', () => write(Math.min(0x60, (raw || 0x3B) + 1)));
+        mk(raw ? 'OFF' : 'ON', () => write(raw ? 0 : 0x3C)).className = 'chd-off';
+        ed.appendChild(box);
+      });
+      seqBody.appendChild(ed);
+    }
+    seqBody.appendChild(makePads(s => {
+      if (rollEvents[p] === null) return;
+      const here = stepContents(p, s);
+      if (here) { rollEdit(p, here, []); return; }
+      const notes = chordNotes(p, chordPad);
+      if (notes.length) placeChord(s, notes, Math.min(cs.len, seqLen - s));
+    }));
+    const row = document.createElement('div'); row.className = 'pad-row';
     for (let d = 0; d < 7; d++) {
       const notes = chordNotes(p, d);
       const b = document.createElement('button');
-      b.className = 'chd-pad' + (d === chordPad ? ' on' : '');
+      b.className = 'pad chord' + (d === chordPad ? ' on' : '');
       b.style.setProperty('--kc', tk.color);
-      b.innerHTML = `<i>CHORD ${d + 1}</i><b>${notes.length ? chordName(notes) : '—'}</b><small>${notes.map(noteName).join(' ')}</small>`;
+      b.innerHTML = `<b>${notes.length ? chordName(notes) : '—'}</b><small>${notes.map(noteName).join(' ')}</small>`;
       b.onclick = () => { chordPad = d; if (notes.length) previewNotes(notes, p, 600); renderSeq(); };
-      pads.appendChild(b);
+      row.appendChild(b);
     }
-    wrap.appendChild(pads);
-    // change the notes of the picked chord (written straight to the SEQTRAK)
-    const ed = document.createElement('div'); ed.className = 'chd-edit';
-    ed.innerHTML = `<span class="chd-lbl">CHORD ${chordPad + 1} NOTES</span>`;
-    set[chordPad].forEach((raw, n) => {
-      const box = document.createElement('div'); box.className = 'chd-note' + (raw ? '' : ' off');
-      const write = v => {
-        set[chordPad][n] = v;
-        MIDIManager.send(SEQTRAK.buildParam(SEQTRAK.CHORD_NOTE(p, proj.scale, chordPad, n), v));
-        const now = chordNotes(p, chordPad); if (now.length) previewNotes(now, p, 500);
-        renderSeq();
-      };
-      const mk = (t, fn) => { const x = document.createElement('button'); x.textContent = t; x.onclick = fn; box.appendChild(x); return x; };
-      mk('−', () => write(Math.max(0x24, (raw || 0x3C) - 1)));
-      const nm = document.createElement('b'); nm.textContent = raw ? noteName(Math.min(127, raw + proj.key)) : 'OFF'; box.appendChild(nm);
-      mk('+', () => write(Math.min(0x60, (raw || 0x3B) + 1)));
-      mk(raw ? 'OFF' : 'ON', () => write(raw ? 0 : 0x3C)).className = 'chd-off';
-      ed.appendChild(box);
-    });
-    wrap.appendChild(ed);
-    // timeline
-    const tl = document.createElement('div'); tl.className = 'chd-tl';
-    tl.style.gridTemplateColumns = `repeat(${seqLen}, 1fr)`;
-    for (let s = 0; s < seqLen; s++) {
-      const c = document.createElement('button'); c.className = 'chd-cell' + (s % 4 === 0 ? ' beat' : '');
-      c.style.gridColumn = `${s + 1}`; c.textContent = s + 1;
-      c.onclick = () => { const notes = chordNotes(p, chordPad); if (notes.length) placeChord(s, notes, Math.min(cs.len, seqLen - s)); };
-      tl.appendChild(c);
-    }
-    chordBlocks(p).forEach(b => {
-      if (b.step >= seqLen) return;
-      const e = document.createElement('button'); e.className = 'chd-block';
-      e.style.gridColumn = `${b.step + 1} / span ${Math.min(b.len, seqLen - b.step)}`;
-      e.style.setProperty('--kc', tk.color);
-      e.innerHTML = `<b>${b.name}</b><small>${b.events.map(x => noteName(x.note)).join(' ')}</small>`;
-      e.onclick = () => rollEdit(p, b.events, []);
-      tl.appendChild(e);
-    });
-    wrap.appendChild(tl);
-    seqBody.appendChild(wrap);
+    seqBody.appendChild(row);
+    paintAllSteps();
   }
+
+  // ======================= MULTITRACK: every drum track at once =======================
+  const trackLen = new Array(11).fill(16);
+  const drumParts = () => SEQTRAK.TRACKS.map((t, i) => i).filter(isDrumPart);
+  let multiTok = 0;
+  async function readMulti() {
+    if (!MIDIManager.isConnected()) return;
+    const tok = ++multiTok;
+    for (const p of drumParts()) {
+      const ps = await askRetry(SEQTRAK.PATTERN_SELECT(p).addr, 450, 2);
+      if (tok !== multiTok) return;
+      if (ps && ps.length) patSel[p] = ps[0];
+      const ln = await askRetry(SEQTRAK.PATTERN_STEPS(p, patSel[p]), 450, 2);
+      if (ln && ln.length >= 2) {
+        const n = Math.max(1, Math.min(128, (ln[0] << 7) | ln[1]));
+        if (n !== trackLen[p]) { trackLen[p] = n; if (seqMode === 'multi') { renderSeq(); return; } }
+      }
+    }
+    for (const p of drumParts()) for (let s = 0; s < Math.min(trackLen[p], 32); s++) {
+      if (tok !== multiTok || seqMode !== 'multi') return;
+      if (steps[p][s] === null) await readStep(p, s);
+    }
+  }
+  function renderMulti() {
+    const parts = drumParts();
+    if (!parts.length) { seqMsg.textContent = 'MULTITRACK shows the drum tracks - there are none right now.'; return; }
+    seqMsg.textContent = 'MULTITRACK: every drum track on one grid. Tap a square to add or remove a hit.';
+    const cols = Math.min(32, Math.max(16, ...parts.map(p => trackLen[p])));
+    const g = document.createElement('div'); g.className = 'mt'; g.style.setProperty('--cols', cols);
+    parts.forEach(p => {
+      const tk = SEQTRAK.TRACKS[p];
+      const r = document.createElement('div'); r.className = 'mt-row'; r.dataset.track = p; r.style.setProperty('--kc', tk.color);
+      const lab = document.createElement('button'); lab.className = 'mt-name';
+      lab.innerHTML = `<b>${trackShort(p)}</b><small>${soundNames[p] || ''}</small>`;
+      lab.onclick = () => previewNotes([60], p, 200);
+      r.appendChild(lab);
+      for (let s = 0; s < cols; s++) {
+        const v = steps[p][s];
+        const c = document.createElement('button');
+        c.className = 'mt-cell' + (s % 4 === 0 ? ' beat' : '') + (v ? ' on' : '') + (v === null ? ' unknown' : '') + (s >= trackLen[p] ? ' off' : '');
+        c.dataset.track = p; c.dataset.step = s;
+        c.innerHTML = '<u></u>';
+        c.onclick = () => { if (s < trackLen[p]) toggleDrum(p, s); };
+        r.appendChild(c);
+      }
+      g.appendChild(r);
+    });
+    seqBody.appendChild(g);
+    readMulti();
+  }
+
+  // ======================= STOCHASTIC: roll the dice, write a pattern =======================
+  const sto = { density: 45, octaves: 1, len: 1, source: 0 };
+  const scaleSets = {};
+  async function scaleNotes() {
+    if (!scaleSets[proj.scale]) {
+      const out = [];
+      for (let i = 0; i < 7; i++) { const d = await askRetry(SEQTRAK.SCALE_NOTE(proj.scale, i), 400, 2); if (d && d.length && d[0]) out.push(d[0]); }
+      if (out.length) scaleSets[proj.scale] = out;
+    }
+    return (scaleSets[proj.scale] || [60, 62, 63, 65, 67, 68, 70]).map(n => n + proj.key);
+  }
+  async function stochGenerate() {
+    const p = seqTrack, dens = sto.density / 100;
+    if (!MIDIManager.isConnected() || busy) return;
+    if (isDrumPart(p)) {
+      for (let s = 0; s < seqLen; s++) {
+        const want = Math.random() < dens * (s % 4 === 0 ? 1.5 : 1), cur = !!steps[p][s];
+        if (want !== cur) { MIDIManager.send(want ? SEQTRAK.STEP.add(p, s, 60, 100, TPS) : SEQTRAK.STEP.del(p, s)); steps[p][s] = want ? { note: 60, vel: 100, gate: TPS } : false; }
+      }
+      renderSeq();
+      return;
+    }
+    if (rollEvents[p] === null) return;
+    let pool = sto.source === 1 && hasChords(p) && chordSets[chordKey(p)] ? chordNotes(p, chordPad) : await scaleNotes();
+    if (!pool.length) pool = await scaleNotes();
+    const shift = (Math.floor(pickNote / 12) - Math.floor(pool[0] / 12)) * 12;
+    const add = [];
+    for (let s = 0; s < seqLen; s += sto.len) {
+      if (Math.random() >= dens * (s % 4 === 0 ? 1.4 : 1)) continue;
+      const n = pool[Math.floor(Math.random() * pool.length)] + shift + 12 * Math.floor(Math.random() * sto.octaves);
+      add.push({ time: s * TPS + 60, note: Math.max(0, Math.min(127, n)), vel: 70 + Math.floor(Math.random() * 50), gate: sto.len * TPS - 10 });
+    }
+    rollEdit(p, rollEvents[p] || [], add);
+  }
+  function renderStoch() {
+    const p = seqTrack, drum = isDrumPart(p);
+    seqMsg.textContent = drum ? 'STOCHASTIC: set how busy, tap ROLL and it writes random hits to this drum track. Roll again for another.'
+      : 'STOCHASTIC: ROLL writes a random line in the SEQTRAK\'s scale and key. The bottom row picks the octave it starts from.';
+    const ctl = document.createElement('div'); ctl.className = 'chd-ctl sto-ctl';
+    const dk = Knob.create({ label: 'DENSITY', min: 5, max: 100, def: 45, size: 'sm', color: SEQTRAK.TRACKS[p].color, fmt: v => v + '%', onChange: v => { sto.density = v; } });
+    dk.setValue(sto.density); ctl.appendChild(dk);
+    const lab = t => { const l = document.createElement('span'); l.className = 'pr-lbl'; l.textContent = t; ctl.appendChild(l); };
+    if (!drum) {
+      lab('OCTAVES'); ctl.appendChild(Knob.segment(['1', '2', '3'], sto.octaves - 1, i => { sto.octaves = i + 1; }));
+      lab('NOTE LENGTH'); ctl.appendChild(Knob.segment(['1', '2', '4'], [1, 2, 4].indexOf(sto.len), i => { sto.len = [1, 2, 4][i]; }));
+      if (hasChords(p)) { lab('NOTES FROM'); ctl.appendChild(Knob.segment(['SCALE', 'PICKED CHORD'], sto.source, i => { sto.source = i; if (i === 1 && !chordSets[chordKey(p)]) readChords(p); })); }
+    }
+    const go = document.createElement('button'); go.className = 'sto-roll'; go.textContent = '🎲 ROLL'; go.onclick = stochGenerate; ctl.appendChild(go);
+    const clr = document.createElement('button'); clr.className = 'chd-clear'; clr.textContent = 'CLEAR PATTERN';
+    clr.onclick = () => {
+      if (!confirm('Clear this track\'s pattern?')) return;
+      if (drum) { for (let s = 0; s < seqLen; s++) if (steps[p][s]) { MIDIManager.send(SEQTRAK.STEP.del(p, s)); steps[p][s] = false; } renderSeq(); }
+      else rollEdit(p, rollEvents[p] || [], []);
+    };
+    ctl.appendChild(clr);
+    seqBody.appendChild(ctl);
+    seqBody.appendChild(makePads(toggleStep));
+    seqBody.appendChild(padRow());
+    paintAllSteps();
+  }
+
+  // ---- playhead: one tick per 16th from the SEQTRAK's clock; the pad being played gets a line of colour,
+  // and a pad with something on it flashes a halo as it plays ----
+  let playStep = -1, clkCount = 0;
+  function paintPlayhead() {
+    seqBody.querySelectorAll('.playing').forEach(e => e.classList.remove('playing'));
+    const line = seqBody.querySelector('.pr-playline');
+    if (!playing || playStep < 0) { if (line) line.style.display = 'none'; return; }
+    const flash = b => { b.classList.add('playing'); if (b.classList.contains('on')) { b.classList.remove('hit'); void b.offsetWidth; b.classList.add('hit'); } };
+    const b = seqBody.querySelector(`.pad64 .seq-step[data-step="${playStep % seqLen}"]`);
+    if (b) flash(b);
+    seqBody.querySelectorAll('.mt-row').forEach(r => { const c = r.querySelector(`.mt-cell[data-step="${playStep % trackLen[+r.dataset.track]}"]`); if (c) flash(c); });
+    if (line) { line.style.display = 'block'; line.style.left = ((playStep % seqLen) / seqLen * 100) + '%'; }
+  }
+  function tick16() { if (!playing) return; playStep++; if (launchVisible()) paintPlayhead(); }
+  function clockIn(b) {                               // F9 = a 16th from the PC bridge; F8 = raw clock (6 per 16th)
+    if (b === 0xF9) tick16();
+    else if (++clkCount % 6 === 0) tick16();
+  }
+  seqBody.addEventListener('pointerdown', e => {
+    const b = e.target.closest && e.target.closest('.seq-step, .pad, .mt-cell');
+    if (b) { b.classList.remove('pressed'); void b.offsetWidth; b.classList.add('pressed'); setTimeout(() => b.classList.remove('pressed'), 420); }
+  }, true);
 
   // ======================= PIANO ROLL (MPC style) =======================
   const pr = { tool: 'draw', grid: 120, len: 120, lowest: 48, rows: 36, snap: true, sel: new Set(), vel: 100 };
@@ -1269,6 +1413,7 @@
       const e = d.e;
       rollEdit(p, [e], [{ time: Math.min(total - 1, Math.max(0, e.time + d.dt)), note: snapPitch(Math.min(127, Math.max(0, e.note + d.dn))), vel: e.vel, gate: Math.max(pr.grid / 2, e.gate + d.dg) }]);
     });
+    const pl = document.createElement('div'); pl.className = 'pr-playline'; pl.style.display = 'none'; grid.appendChild(pl);
     area.append(keys, grid);
     // beat ruler
     const ruler = document.createElement('div'); ruler.className = 'pr-ruler';
@@ -1305,11 +1450,7 @@
   // ---- patterns, length, transport ----
   document.querySelectorAll('.pattern-btn').forEach(btn => {
     btn.addEventListener('click', () => {
-      const pat = parseInt(btn.dataset.pattern);
-      MIDIManager.send(SEQTRAK.buildParam(SEQTRAK.PATTERN_MODE, 1));                 // patterns 3-6 reachable (verified)
-      SEQTRAK.TRACKS.forEach((t, p) => { sendDef(SEQTRAK.PATTERN_SELECT(p), pat); patSel[p] = pat; });
-      steps.forEach(a => a.fill(null)); rollEvents.fill(null);
-      setTimeout(loadTrack, 300);
+      launchClip(seqTrack, parseInt(btn.dataset.pattern));        // this track's pattern (the clip grid is on MAIN MIX)
     });
   });
   document.querySelectorAll('.len-btn').forEach(btn => {
@@ -1327,9 +1468,10 @@
     playing = v;
     document.querySelectorAll('.seq-play, #seq-play').forEach(b => b.classList.toggle('on', v));
     if (!v && recOn) { recOn = false; recBtn.classList.remove('on'); }
-    if (typeof launchPlaying === 'function') launchPlaying(v);
+    if (!v) playStep = -1;
+    paintPlayhead();
   }
-  document.getElementById('seq-play').addEventListener('click', () => { MIDIManager.send(new Uint8Array([0xFA])); setPlaying(true); });
+  document.getElementById('seq-play').addEventListener('click', () => { MIDIManager.send(new Uint8Array([0xFA])); playStep = 0; clkCount = 0; setPlaying(true); });
   document.getElementById('seq-stop').addEventListener('click', () => { MIDIManager.send(new Uint8Array([0xFC])); setPlaying(false); });
   recBtn.addEventListener('click', () => {
     if (!playing) { seqMsg.textContent = 'REC only works while playing - press play first (the SEQTRAK ignores it when stopped).'; return; }
@@ -1364,23 +1506,23 @@
     muted[p] = on;
     MIDIManager.sendCC(p, 23, on ? 127 : 0);
     const sm = stripsEl.querySelector(`.strip[data-track="${p}"] .strip-m`); if (sm) sm.classList.toggle('on', on);
-    const lm = launchGrid.querySelector(`.lr-m[data-track="${p}"]`); if (lm) lm.classList.toggle('on', on);
+    document.querySelectorAll(`.lr-m[data-track="${p}"]`).forEach(lm => lm.classList.toggle('on', on));
   }
   function setSolo(p) {
     soloPart = soloPart === p ? -1 : p;
     MIDIManager.sendCC(p, 24, soloPart < 0 ? 0 : soloPart + 1);
-    launchGrid.querySelectorAll('.lr-s').forEach(b => b.classList.toggle('on', +b.dataset.track === soloPart));
+    document.querySelectorAll('.lr-s').forEach(b => b.classList.toggle('on', +b.dataset.track === soloPart));
     stripsEl.querySelectorAll('.strip-s').forEach((b, i) => b.classList.toggle('on', i === soloPart));
   }
   // tracks across the top (they are also the track selector for the sequencer underneath), 6 scenes down:
   // scene n = every track on its pattern n
   const sceneOn = n => patSel.every(v => v === n);
   function paintScenes() { launchGrid.querySelectorAll('.lg-scene').forEach(b => b.classList.toggle('on', sceneOn(+b.dataset.scene))); }
-  function paintLaunchSel() { launchGrid.querySelectorAll('.lg-track').forEach(c => c.classList.toggle('sel', +c.dataset.track === selTrack)); }
-  function renderLaunch() {
-    launchGrid.innerHTML = '';
-    const head = document.createElement('div'); head.className = 'lg-row lg-head';
-    head.innerHTML = '<div class="lg-corner">SCENES</div>';
+  const seqTracksEl = document.getElementById('seq-tracks');
+  function paintLaunchSel() { seqTracksEl.querySelectorAll('.lg-track').forEach(c => c.classList.toggle('sel', +c.dataset.track === selTrack)); }
+  // the track picker above the sequencer: type + sound name, mute / solo
+  function renderTrackSel() {
+    seqTracksEl.innerHTML = '';
     SEQTRAK.TRACKS.forEach((tk, p) => {
       const c = document.createElement('div');
       c.className = 'lg-track' + (p === selTrack ? ' sel' : ''); c.dataset.track = p; c.style.setProperty('--kc', tk.color);
@@ -1389,15 +1531,14 @@
       c.querySelector('.lg-name').onclick = () => selectTrack(p);
       c.querySelector('.lr-m').onclick = () => setMute(p, !muted[p]);
       c.querySelector('.lr-s').onclick = () => setSolo(p);
-      head.appendChild(c);
+      seqTracksEl.appendChild(c);
     });
-    launchGrid.appendChild(head);
+  }
+  // the clips, under the mixer: one column per strip (they line up), scene buttons under MAIN
+  function renderClips() {
+    launchGrid.innerHTML = '';
     for (let n = 0; n < 6; n++) {
-      const r = document.createElement('div'); r.className = 'lg-row';
-      const sb = document.createElement('button'); sb.className = 'lg-scene' + (sceneOn(n) ? ' on' : ''); sb.dataset.scene = n;
-      sb.innerHTML = `▶ <b>${n + 1}</b>`;
-      sb.onclick = () => launchScene(n);
-      r.appendChild(sb);
+      const r = document.createElement('div'); r.className = 'cg-row';
       SEQTRAK.TRACKS.forEach((tk, p) => {
         const c = document.createElement('button');
         c.className = 'lr-clip' + (patSel[p] === n ? ' on' : '');
@@ -1406,9 +1547,14 @@
         c.onclick = () => launchClip(p, n);
         r.appendChild(c);
       });
+      const sb = document.createElement('button'); sb.className = 'lg-scene' + (sceneOn(n) ? ' on' : ''); sb.dataset.scene = n;
+      sb.innerHTML = `▶ <b>${n + 1}</b>`; sb.title = 'Scene ' + (n + 1) + ': every track to its pattern ' + (n + 1);
+      sb.onclick = () => launchScene(n);
+      r.appendChild(sb);
       launchGrid.appendChild(r);
     }
   }
+  function renderLaunch() { renderClips(); renderTrackSel(); }
   function paintClips(p) {
     launchGrid.querySelectorAll(`.lr-clip[data-track="${p}"]`).forEach(c => {
       c.classList.toggle('on', +c.dataset.pat === patSel[p]);
@@ -1423,7 +1569,12 @@
     const was = patSel[p];
     if (d && d.length) patSel[p] = d[0];
     paintClips(p);
-    if (p === seqTrack && was !== patSel[p]) { steps[p].fill(null); rollEvents[p] = null; loadTrack(); }   // the sequencer shows the pattern now playing
+    if (was !== patSel[p]) {                                     // the sequencer shows the pattern now playing
+      steps[p].fill(null); rollEvents[p] = null;
+      if (p === seqTrack && launchVisible()) loadTrack();
+      else if (seqMode === 'multi' && launchVisible()) { renderSeq(); }
+    }
+    if (p === seqTrack) document.querySelectorAll('.pattern-btn').forEach(b => b.classList.toggle('active', +b.dataset.pattern === patSel[p]));
   }
   function launchClip(p, n) {
     ensureMode();
@@ -1440,13 +1591,13 @@
   function launchPlaying(v) { document.querySelectorAll('.launch-play').forEach(b => b.classList.toggle('on', v)); }
   onTracks(renderLaunch);
   document.querySelector('.tab[data-page="launch"]').addEventListener('click', async () => {
-    renderLaunch();
+    renderTrackSel();
     if (!MIDIManager.isConnected()) { renderSeq(); return; }
     MIDIManager.send(SEQTRAK.buildRequest([0x30, 0x40, 0x76]));
-    for (let p = 0; p < 11; p++) await confirmPattern(p);
     loadTrack();
   });
-  document.getElementById('clips-toggle').onclick = e => { const c = launchGrid.classList.toggle('collapsed'); e.currentTarget.textContent = c ? 'CLIPS ▾' : 'CLIPS ▴'; };
+  async function readPatterns() { for (let p = 0; p < 11; p++) await confirmPattern(p); }
+  document.querySelector('.tab[data-page="mix"]').addEventListener('click', () => { if (MIDIManager.isConnected()) readPatterns(); });
   // strip mute/solo buttons share the same state
   stripsEl.querySelectorAll('.strip[data-track]').forEach(s => {
     const p = +s.dataset.track, m = s.querySelector('.strip-m'), so = s.querySelector('.strip-s');
@@ -1490,6 +1641,7 @@
   function placeM1Reset() {
     document.querySelectorAll('.m1-learn .reset-btn').forEach(b => b.remove());
     document.querySelector('.m1-learn').appendChild(resetButton(m1Target, 'RESET SOUND'));
+    if (soundNames[m1Target]) m1LoadedName.textContent = soundNames[m1Target];
   }
   function setM1Target(p) {
     if (p === m1Target || trackType[p] !== 2) return;
@@ -1531,8 +1683,19 @@
     unreg(m1QE); unreg(m1SN); m1QE.innerHTML = ''; m1SN.innerHTML = '';
     const P = SEQTRAK.P, p = m1Target;
     const rl = (d, l) => Object.assign(d, { label: l });
-    m1QE.appendChild(krow([rl(P.cutoff(p), 'CUTOFF'), rl(P.fegDepth(p), 'FILTER EG'), rl(P.ampAttack(p), 'ATTACK'), rl(P.ampDecRel(p), 'DECAY'),
-      rl(P.aegS(p), 'SUSTAIN'), rl(P.aegR(p), 'RELEASE'), rl(P.portaTime(p), 'PORTA'), rl(P.reverb(p), 'FX AMT')], 'var(--fb-cyan)'));
+    // The M1 sounds have a flat envelope stored (decay 0, sustain full), so offsets had nothing to push against.
+    // These knobs write the elements' real envelope: DECAY = time to fall to SUSTAIN.
+    const E = SEQTRAK.E;
+    const susDef = Object.assign(E.aegSustain(p), { fan: E.aegD1Lvl(p).fan.concat(E.aegSustain(p).fan) });
+    const row = krow([rl(E.cutoff(p), 'CUTOFF'), rl(E.reso(p), 'RESO'), E.aegAttack(p), E.aegRelease(p), rl(P.portaTime(p), 'PORTA'), rl(P.reverb(p), 'FX AMT')], 'var(--fb-cyan)');
+    const sus = pk(susDef, 'var(--fb-cyan)');
+    const decDef = E.aegDecay(p);
+    const dec = reg(decDef, Knob.create(Object.assign({}, decDef, { color: 'var(--fb-cyan)', onChange: v => {
+      sendDef(decDef, v);
+      if (sus.getValue() >= 127) { sus.setValue(0); sendDef(susDef, 0); }      // decay needs somewhere to fall to
+    } })));
+    row.insertBefore(dec, row.children[3]); row.insertBefore(sus, row.children[4]);
+    m1QE.appendChild(row);
     m1SN.appendChild(krow([P.volume(p), P.reverb(p), P.delay(p)], 'var(--fb-blue)'));
     requestDefs(defsIn(m1QE).concat(defsIn(m1SN)));
   }
@@ -1696,7 +1859,9 @@
   // ---- LIBRARY: M1 programs applied live to the target track ----
   const libBanksEl = document.getElementById('lib-banks'), libProgsEl = document.getElementById('lib-progs');
   const libStatus = document.getElementById('lib-status'), libInfo = document.getElementById('lib-info');
-  let libBanks = [], libSel = 0, libQuery = '', libLoadedKey = '', libAutoTried = false;
+  let libBanks = [], libSel = 0, libQuery = '', libLoadedKey = '', libAutoTried = false, libCat = 'ALL';
+  const libCatsEl = document.createElement('div'); libCatsEl.className = 'm1-pcats lib-cats';
+  libProgsEl.parentElement.insertBefore(libCatsEl, libProgsEl);
   async function refreshLib() {
     try { libBanks = await M1Lib.allBanks(); } catch (e) { libBanks = []; }
     // on the PC bridge the user's own bank file is served locally (/private/m1lib): load it once, no file picker
@@ -1729,10 +1894,25 @@
     });
     libProgsEl.innerHTML = '';
     const bank = libBanks[libSel];
+    libCatsEl.innerHTML = '';
     if (!bank) return;
+    // categories, like the PLAY page: by the M1 sound each program is built on
+    const descs = bank.progs.map(p => M1Lib.describe(p));
+    const catOf = d => (d.mode === 2 ? 'Drums' : (M1_SOUNDS.getById(d.ms1) || {}).cat || 'Other');
+    const counts = {}; descs.forEach(d => { const c = catOf(d); counts[c] = (counts[c] || 0) + 1; });
+    if (libCat !== 'ALL' && !counts[libCat]) libCat = 'ALL';
+    ['ALL', ...M1_SOUNDS.CATEGORIES.filter(c => counts[c]), ...['Drums', 'Other'].filter(c => counts[c])].forEach(cat => {
+      const b = document.createElement('button');
+      b.className = 'm1-pcat' + (cat === libCat ? ' on' : '');
+      b.style.setProperty('--cc', CAT_COL[cat] || '#2d8cf0');
+      b.innerHTML = `${cat.toUpperCase()}<span>${cat === 'ALL' ? descs.length : counts[cat]}</span>`;
+      b.onclick = () => { libCat = cat; renderLib(); };
+      libCatsEl.appendChild(b);
+    });
     bank.progs.forEach((p, k) => {
-      const d = M1Lib.describe(p);
+      const d = descs[k];
       if (q && !bank.name.toLowerCase().includes(q) && !d.name.toLowerCase().includes(q)) return;
+      if (libCat !== 'ALL' && catOf(d) !== libCat) return;
       const ms = M1_SOUNDS.getById(d.ms1);
       const t = document.createElement('button');
       const key = bank.name + '#' + k;
@@ -1845,10 +2025,14 @@
         const p = pc.addr[1] & 0x0F, st = pc.addr[2], d = pc.data;
         if (p < 11 && st < 128) { steps[p][st] = d.length >= 6 ? { note: d[0], vel: d[1], gate: (d[4] << 7) | d[5] } : false; paintStep(p, st); }
       }
+      if (pc.key === 'sx:011020' && pc.data.length) {                       // SequencerStatus: 1 playing / 0 stopped
+        const on = !!pc.data[0];
+        if (on !== playing) { if (on && playStep < 0) { playStep = 0; clkCount = 0; } setPlaying(on); }
+      }
       if (pc.key === 'sx:011027' && pc.data.length) { if (pc.data[0] !== selTrack) selectTrack(pc.data[0], true); }      // track picked on the unit
       else if (pc.key === 'sx:011007' && pc.data.length) setPlug(pc.data[0]);                                            // headphones / line lead in or out
-      else if (pc.key === 'sx:30407e' && pc.data.length && (pc.data[0] & 7) !== proj.scale) { proj.scale = pc.data[0] & 7; if (seqMode === 'chords') renderSeq(); }
-      else if (pc.key === 'sx:30407f' && pc.data.length) { const k = Math.max(0, Math.min(11, pc.data[0] - 0x40)); if (k !== proj.key) { proj.key = k; if (seqMode === 'chords') renderSeq(); } }
+      else if (pc.key === 'sx:30407e' && pc.data.length && (pc.data[0] & 7) !== proj.scale) { proj.scale = pc.data[0] & 7; delete scaleSets[proj.scale]; if (seqMode === 'chord') renderSeq(); }
+      else if (pc.key === 'sx:30407f' && pc.data.length) { const k = Math.max(0, Math.min(11, pc.data[0] - 0x40)); if (k !== proj.key) { proj.key = k; if (seqMode === 'chord') renderSeq(); } }
       if (pc.addr[0] === 0x30 && pc.addr[2] === 0x00 && pc.addr[1] >= 0x41 && pc.addr[1] <= 0x45 && pc.data.length >= 2) {
         setTypeName(pc.key, SEQTRAK.fxTypeName(pc.data[0], pc.data[1]));
       }
@@ -1858,7 +2042,9 @@
     const st = data[0] & 0xF0, ch = data[0] & 0x0F;
     if (st === 0xB0) applyIncoming(`cc:${ch}:${data[1]}`, data[2]);
     else if (st === 0xC0 && ch < 11) onSoundChanged(ch);                 // unit changed sound: follow it
-    else if (data[0] === 0xFA || data[0] === 0xFB) setPlaying(true);
+    else if (data[0] === 0xFA) { playStep = 0; clkCount = 0; setPlaying(true); }
+    else if (data[0] === 0xFB) { if (playStep < 0) playStep = 0; setPlaying(true); }
+    else if (data[0] === 0xF8 || data[0] === 0xF9) clockIn(data[0]);
     else if (data[0] === 0xFC) setPlaying(false);
   };
 
@@ -1867,10 +2053,11 @@
     const defs = [SEQTRAK.MASTER_VOLUME, SEQTRAK.HP_VOLUME];
     MIDIManager.send(SEQTRAK.buildRequest(SEQTRAK.HP_PLUG));
     MIDIManager.send(SEQTRAK.buildRequest(SEQTRAK.CURRENT_PART));
+    MIDIManager.send(SEQTRAK.buildRequest([0x01, 0x10, 0x20]));
     SEQTRAK.TRACKS.forEach((t, p) => defs.push(SEQTRAK.P.volume(p), SEQTRAK.P.pan(p)));
     requestDefs(defs.concat(defsIn(sndGrid), defsIn(document.getElementById('page-dx'))));
     MIDIManager.send(SEQTRAK.buildRequest([0x30, 0x40, 0x76]));
-    (async () => { await readTypes(); for (let p = 0; p < 11; p++) { await readSoundNo(p); await fetchName(p); paintEdited(p); } if (launchVisible()) loadTrack(); })();
+    (async () => { await readTypes(); for (let p = 0; p < 11; p++) { await readSoundNo(p); await fetchName(p); paintEdited(p); } await readPatterns(); if (launchVisible()) loadTrack(); })();
   }
 
   // ---- Init MIDI ----

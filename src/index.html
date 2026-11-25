@@ -27,7 +27,7 @@
 
     <nav id="page-tabs">
       <button class="tab active" data-page="mix">MAIN MIX</button>
-      <button class="tab" data-page="launch">LAUNCH + SEQ</button>
+      <button class="tab" data-page="launch">SEQUENCER</button>
       <button class="tab" data-page="dx">DX</button>
       <button class="tab" data-page="fx">FX</button>
       <button class="tab" data-page="m1">M-ONE</button>
@@ -54,6 +54,7 @@
     <section id="page-mix" class="page active">
       <div class="mix-left panel-glass">
         <div class="mix-strips" id="mix-strips"></div>
+        <div class="clip-grid" id="launch-grid"></div>
       </div>
       <div class="mix-right">
         <div class="snd-head" id="snd-head"></div>
@@ -64,7 +65,7 @@
 
     <!-- LAUNCH + SEQ: clips on top (tracks across, 6 scenes down), the sequencer for the picked track underneath -->
     <section id="page-launch" class="page hidden">
-      <div class="launch-grid" id="launch-grid"></div>
+      <div class="seq-tracks" id="seq-tracks"></div>
       <div class="seq-section">
         <div class="seq-top">
           <div class="seq-transport">
@@ -73,11 +74,22 @@
             <button class="seq-btn" id="seq-rec" title="Record">&#9679;</button>
           </div>
           <div class="seq-modes">
-            <button class="seq-mode active" data-mode="step">STEP</button>
-            <button class="seq-mode" data-mode="chords">CHORDS</button>
+            <button class="seq-mode active" data-mode="mono">MONO</button>
+            <button class="seq-mode" data-mode="poly">POLY</button>
+            <button class="seq-mode" data-mode="chord">CHORD</button>
+            <button class="seq-mode" data-mode="multi">MULTITRACK</button>
+            <button class="seq-mode" data-mode="stoch">STOCHASTIC</button>
             <button class="seq-mode" data-mode="roll">PIANO ROLL</button>
           </div>
-          <button class="seq-clips" id="clips-toggle">CLIPS ▴</button>
+          <div class="seq-patterns">
+            <span class="seq-lbl">PATTERN</span>
+            <button class="pattern-btn active" data-pattern="0">1</button>
+            <button class="pattern-btn" data-pattern="1">2</button>
+            <button class="pattern-btn" data-pattern="2">3</button>
+            <button class="pattern-btn" data-pattern="3">4</button>
+            <button class="pattern-btn" data-pattern="4">5</button>
+            <button class="pattern-btn" data-pattern="5">6</button>
+          </div>
           <div class="seq-length">
             <span class="seq-lbl">STEPS</span>
             <button class="len-btn active" data-len="16">16</button>
