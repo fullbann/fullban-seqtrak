@@ -3,7 +3,7 @@
  "short_name": "SEQ-TRAK",
  "start_url": "./",
  "scope": "./",
- "display": "standalone",
+ "display": "fullscreen",
  "orientation": "landscape",
  "background_color": "#0a0e14",
  "theme_color": "#0a0e14",
