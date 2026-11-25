@@ -54,50 +54,69 @@ const SEQTRAK = (() => {
     return Object.assign({ kind: 'cc', ch, cc: num, label, min: 0, max: 127, def: 0, fmt: fmt.raw }, extra || {});
   }
 
+  // Every knob below writes and reads a documented SysEx address. Where the unit's own knob sends a CC
+  // for the same thing, rxcc makes the app's knob follow it. CC <-> address pairs measured on the unit
+  // 25 Nov 2026: CC73=31 1p 2C, CC75=31 1p 00, CC91=31 1p 19, CC94=31 1p 1A, CC21=31 1p 48, CC20=31 1p 4D,
+  // CC25=31 1p 1C, CC26=31 1p 23, CC27=31 5p 00, CC28=31 5p 14 (0-200 %), CC5=31 1p 1F, CC117-119=31 1p 03-05.
+  // CC74/CC71 do NOT move 31 1p 36/37, so cutoff/reso use the address (readable) and only listen to the CC.
+  const arp = (p, lo, label, extra) => Object.assign({ kind: 'sx', addr: [0x31, 0x50 | p, lo], label, min: 0, max: 127, def: 0, fmt: fmt.raw }, extra || {});
   const P = {
-    volume: p => track(p, 0x00, 'VOLUME', { hw: true, def: 100, cc: 7 }),
-    pan:    p => track(p, 0x01, 'PAN', { hw: true, min: 1, def: 64, bipolar: true, fmt: fmt.pan, cc: 10 }),
-    reverb: p => cc(p, 91, 'REVERB'),
-    delay:  p => cc(p, 94, 'DELAY'),
-    eqLow:  p => cc(p, 21, 'EQ LOW',  { min: 40, max: 88, def: 64, bipolar: true, fmt: fmt.db12 }),
-    eqHigh: p => cc(p, 20, 'EQ HIGH', { min: 40, max: 88, def: 64, bipolar: true, fmt: fmt.db12 }),
-    drumPitch: p => cc(p, 25, 'PITCH', { min: 40, max: 88, def: 64, bipolar: true, fmt: fmt.semi24 }),
-    // CCs below are documented transmit+receive, so they also follow the unit's own knobs
-    cutoff: p => cc(p, 74, 'CUTOFF', { def: 64, bipolar: true, fmt: fmt.bi64 }),
-    reso:   p => cc(p, 71, 'RESO',   { def: 64, bipolar: true, fmt: fmt.bi64 }),
-    ampAttack: p => cc(p, 73, 'ATTACK',  { def: 64, bipolar: true, fmt: fmt.bi64 }),
-    ampDecRel: p => cc(p, 75, 'DEC/REL', { def: 64, bipolar: true, fmt: fmt.bi64 }),
+    volume: p => track(p, 0x00, 'VOLUME', { hw: true, def: 100, rxcc: 7 }),
+    pan:    p => track(p, 0x01, 'PAN', { hw: true, min: 1, def: 64, bipolar: true, fmt: fmt.pan, rxcc: 10 }),
+    reverb: p => sound(p, 0x19, 'REVERB', { def: 0, bipolar: false, fmt: fmt.raw, rxcc: 91 }),
+    delay:  p => sound(p, 0x1A, 'DELAY', { def: 0, bipolar: false, fmt: fmt.raw, rxcc: 94 }),
+    eqLow:  p => sound(p, 0x48, 'EQ LOW',  { min: 40, max: 88, fmt: fmt.db12, rxcc: 21 }),
+    eqHigh: p => sound(p, 0x4D, 'EQ HIGH', { min: 40, max: 88, fmt: fmt.db12, rxcc: 20 }),
+    drumPitch: p => sound(p, 0x1C, 'PITCH', { min: 40, max: 88, fmt: fmt.semi24, rxcc: 25 }),
+    cutoff: p => sound(p, 0x36, 'CUTOFF', { rxcc: 74 }),
+    reso:   p => sound(p, 0x37, 'RESO', { rxcc: 71 }),
+    ampAttack: p => sound(p, 0x2C, 'ATTACK', { rxcc: 73 }),
+    ampDecRel: p => sound(p, 0x00, 'DEC/REL', { rxcc: 75 }),
     fegDepth: p => sound(p, 0x34, 'FEG DEPTH'),
     fegA: p => sound(p, 0x30, 'ATTACK'),
     fegD: p => sound(p, 0x31, 'DECAY'),
     fegS: p => sound(p, 0x32, 'SUSTAIN'),
     fegR: p => sound(p, 0x33, 'RELEASE'),
-    aegA: p => sound(p, 0x2C, 'ATTACK'),
+    aegA: p => sound(p, 0x2C, 'ATTACK', { rxcc: 73 }),
     aegD: p => sound(p, 0x2D, 'DECAY'),
     aegS: p => sound(p, 0x2E, 'SUSTAIN'),
     aegR: p => sound(p, 0x2F, 'RELEASE'),
-    noteShift: p => sound(p, 0x1C, 'TRANSPOSE', { min: 0x28, max: 0x58, fmt: fmt.semi24 }),
-    portaTime: p => sound(p, 0x1F, 'PORTA', { bipolar: false, fmt: fmt.raw }),
+    noteShift: p => sound(p, 0x1C, 'TRANSPOSE', { min: 0x28, max: 0x58, fmt: fmt.semi24, rxcc: 25 }),
+    portaTime: p => sound(p, 0x1F, 'PORTA', { bipolar: false, fmt: fmt.raw, rxcc: 5 }),
     velDepth: p => sound(p, 0x12, 'VEL DEPTH', { bipolar: false, fmt: fmt.raw }),
-    monoPoly: p => cc(p, 26, 'MODE', { min: 0, max: 2, def: 1, fmt: fmt.list(['MONO', 'POLY', 'CHORD']), steps: true }),
-    arpType:  p => cc(p, 27, 'ARP', { min: 0, max: 15, def: 0, fmt: v => v === 0 ? 'OFF' : String(v), steps: true }),
-    arpGate:  p => cc(p, 28, 'ARP GATE', { def: 64, fmt: v => Math.round(v / 127 * 200) + '%' }),
-    // DX track CCs 116-119 (documented transmit+receive)
-    fmAlgoCC:  p => cc(p, 116, 'ALGO', { min: 0, max: 11, fmt: v => String(v + 1), steps: true }),
-    fmModCC:   p => cc(p, 117, 'MOD AMT', { def: 64 }),
-    fmFreqCC:  p => cc(p, 118, 'MOD FREQ', { def: 64 }),
-    fmFbCC:    p => cc(p, 119, 'FEEDBACK', { def: 64 }),
-    // FM sound offsets for the DX track (31 1p 00-05)
-    fmRelease: p => sound(p, 0x00, 'RELEASE'),
+    monoPoly: p => sound(p, 0x23, 'MODE', { min: 0, max: 2, def: 1, bipolar: false, fmt: fmt.list(['MONO', 'POLY', 'CHORD']), steps: true, rxcc: 26 }),
+    arpType:  p => arp(p, 0x00, 'ARP', { min: 0, max: 15, fmt: v => v === 0 ? 'OFF' : String(v), steps: true, rxcc: 27 }),
+    // gate is two bytes (0-200 %) at 31 5p 14: sent as CC 28, read back from the address
+    arpGate:  p => cc(p, 28, 'ARP GATE', { def: 64, fmt: v => Math.round(v / 127 * 200) + '%', rd: [0x31, 0x50 | p, 0x14], rdConv: d => Math.max(0, Math.min(127, Math.round(((d[0] << 7) | d[1]) * 127 / 200))) }),
+    fmAlgoCC:  p => ({ kind: 'sx', addr: [0x48, 0x09, 0x00], label: 'ALGO', min: 0, max: 11, def: 0, fmt: v => String(v + 1), steps: true, rxcc: 116, rxch: 9 }),
+    fmModCC:   p => sound(p, 0x03, 'MOD AMT', { rxcc: 117 }),
+    fmFreqCC:  p => sound(p, 0x04, 'MOD FREQ', { rxcc: 118 }),
+    fmFbCC:    p => sound(p, 0x05, 'FEEDBACK', { rxcc: 119 }),
+    fmRelease: p => sound(p, 0x00, 'RELEASE', { rxcc: 75 }),
     fmAttack:  p => sound(p, 0x01, 'C.ATTACK'),
     fmDecay:   p => sound(p, 0x02, 'C.DECAY'),
-    fmModAmt:  p => sound(p, 0x03, 'MOD AMT'),
-    fmRatio:   p => sound(p, 0x04, 'RATIO'),
-    fmFback:   p => sound(p, 0x05, 'FEEDBACK'),
+    fmModAmt:  p => sound(p, 0x03, 'MOD AMT', { rxcc: 117 }),
+    fmRatio:   p => sound(p, 0x04, 'RATIO', { rxcc: 118 }),
+    fmFback:   p => sound(p, 0x05, 'FEEDBACK', { rxcc: 119 }),
   };
 
   // Master: speaker master volume 00 00 00 (verified on hardware)
-  const MASTER_VOLUME = { kind: 'sx', addr: [0x00, 0x00, 0x00], label: 'MASTER', min: 0, max: 127, def: 100, hw: true, fmt: fmt.raw };
+  const MASTER_VOLUME = { kind: 'sx', addr: [0x00, 0x00, 0x00], label: 'SPEAKER', min: 0, max: 127, def: 100, hw: true, fmt: fmt.raw };
+  // Headphone/line master 00 00 01 (written + read back on the unit 25 Nov), plug status 01 10 07 (1 = plugged)
+  const HP_VOLUME = { kind: 'sx', addr: [0x00, 0x00, 0x01], label: 'PHONES', min: 0, max: 127, def: 20, hw: true, fmt: fmt.raw };
+  const HP_PLUG = [0x01, 0x10, 0x07];
+  // Selected track on the unit: 01 10 27 (broadcast on every track change; a write selects the track - tested 25 Nov)
+  const CURRENT_PART = [0x01, 0x10, 0x27];
+  // Current sound number of a part: 01 1p 33, two 7-bit bytes = catalogue number - 1
+  const CURRENT_SOUND = p => [0x01, 0x10 | p, 0x33];
+  // Project scale (0-7) and key (40-4B = C..B)
+  const SCALE = { kind: 'sx', addr: [0x30, 0x40, 0x7E], min: 0, max: 7 };
+  const KEY = { kind: 'sx', addr: [0x30, 0x40, 0x7F], min: 0x40, max: 0x4B };
+  // The unit's own chords: 7 pads x 4 notes per scale, per track (parts 7-9). Scales 1-4 at 30 6p, 5-8 at 30 7p,
+  // offset = (scale % 4) * 20h + pad * 4 + note. Value 0 = no note, else 24h-60h. Read back on the unit 25 Nov.
+  const CHORD_NOTE = (p, scale, pad, n) => [0x30, (scale < 4 ? 0x60 : 0x70) | p, (scale % 4) * 0x20 + pad * 4 + n];
+  // Insertion A = the track's own effect: type at 31 2p 00 (two bytes, effect-types table)
+  const INS_TYPE = p => [0x31, 0x20 | p, 0x00];
 
   // ---- DX / FM engine (03f) ----
   const LFO_WAVES = ['SIN', 'TRI', 'SAW UP', 'SAW DN', 'SQUARE', 'S&H 8', 'S&H'];
@@ -105,7 +124,7 @@ const SEQTRAK = (() => {
     return Object.assign({ kind: 'sx', addr: [0x48, 0x09, lo], label, min: 0, max: 127, def: 64, fmt: fmt.raw }, extra || {});
   }
   const DX_COMMON = {
-    algorithm: dxc(0x00, 'ALGORITHM', { min: 0, max: 11, def: 0, hw: true, fmt: v => String(v + 1), rx: ['cc:9:116'] }),
+    algorithm: dxc(0x00, 'ALGORITHM', { min: 0, max: 11, def: 0, hw: true, fmt: v => String(v + 1), rxcc: 116, rxch: 9 }),
     pbSens:    dxc(0x02, 'PB RANGE', { min: 0x28, max: 0x58, def: 0x42, bipolar: true, fmt: fmt.semi24 }),
     lfoWave:   dxc(0x04, 'LFO WAVE', { min: 0, max: 6, def: 0, fmt: fmt.list(LFO_WAVES), steps: true }),
     lfoSpeed:  dxc(0x05, 'SPEED', { def: 0x40 }),
@@ -159,9 +178,7 @@ const SEQTRAK = (() => {
   // Send for a param definition: SysEx write, plus its mirror CC where one is documented
   function messagesFor(def, value) {
     if (def.kind === 'cc') return [buildCC(def.ch, def.cc, value)];
-    const out = [buildParam(def.addr, value)];
-    if (def.cc !== undefined) out.push(buildCC(def.addr[1] & 0x0F, def.cc, value));
-    return out;
+    return [buildParam(def.addr, value)];
   }
 
   // Keys used by the sync registry
@@ -251,7 +268,7 @@ const SEQTRAK = (() => {
   function buildDxOpMsg(_dev, o, key, v) { const f = DX_OP[key]; return f ? buildParam(f(o).addr, v) : null; }
 
   return {
-    TRACKS, P, MASTER_VOLUME, DX_COMMON, DX_OP, LFO_WAVES, fmt,
+    TRACKS, P, MASTER_VOLUME, HP_VOLUME, HP_PLUG, CURRENT_PART, CURRENT_SOUND, SCALE, KEY, CHORD_NOTE, INS_TYPE, DX_COMMON, DX_OP, LFO_WAVES, fmt,
     buildParam, buildParamData, buildRequest, unpack7, decodeName, soundNameAddr, loadSound,
     FX, fxTypeName, STEP, ROLL, TYPE_ADDR, TYPE_NAMES, DEFAULT_TYPE, PATTERN_STEPS, PATTERN_MODE, PATTERN_SELECT, RECORDING, buildCC, messagesFor, keyOf, parseParamChange,
     buildDxCommonMsg, buildDxOpMsg,

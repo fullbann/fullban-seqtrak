@@ -26,11 +26,10 @@
     </header>
 
     <nav id="page-tabs">
-      <button class="tab active" data-page="mix">MIX</button>
-      <button class="tab" data-page="launch">LAUNCH</button>
+      <button class="tab active" data-page="mix">MAIN MIX</button>
+      <button class="tab" data-page="launch">LAUNCH + SEQ</button>
       <button class="tab" data-page="dx">DX</button>
       <button class="tab" data-page="fx">FX</button>
-      <button class="tab" data-page="seq">SEQ</button>
       <button class="tab" data-page="m1">M-ONE</button>
     </nav>
 
@@ -63,14 +62,37 @@
       </div>
     </section>
 
-    <!-- LAUNCH: clip launch -->
+    <!-- LAUNCH + SEQ: clips on top (tracks across, 6 scenes down), the sequencer for the picked track underneath -->
     <section id="page-launch" class="page hidden">
-      <div class="launch-top">
-        <button class="seq-btn launch-play" title="Play">&#9654;</button>
-        <button class="seq-btn launch-stop" title="Stop">&#9632;</button>
-        <span class="launch-note">Tap a clip to switch that track's pattern · ALL n switches every track · SCENES 1-8 recall your own mixes (STORE then tap a scene to save what's playing).</span>
-      </div>
       <div class="launch-grid" id="launch-grid"></div>
+      <div class="seq-section">
+        <div class="seq-top">
+          <div class="seq-transport">
+            <button class="seq-btn" id="seq-play" title="Play">&#9654;</button>
+            <button class="seq-btn" id="seq-stop" title="Stop">&#9632;</button>
+            <button class="seq-btn" id="seq-rec" title="Record">&#9679;</button>
+          </div>
+          <div class="seq-modes">
+            <button class="seq-mode active" data-mode="step">STEP</button>
+            <button class="seq-mode" data-mode="chords">CHORDS</button>
+            <button class="seq-mode" data-mode="roll">PIANO ROLL</button>
+          </div>
+          <button class="seq-clips" id="clips-toggle">CLIPS ▴</button>
+          <div class="seq-length">
+            <span class="seq-lbl">STEPS</span>
+            <button class="len-btn active" data-len="16">16</button>
+            <button class="len-btn" data-len="32">32</button>
+            <button class="len-btn" data-len="64">64</button>
+          </div>
+          <div class="seq-bpm">
+            <label>BPM</label>
+            <input type="number" id="seq-bpm-input" min="20" max="300" value="130">
+          </div>
+        </div>
+        <div class="track-chips" id="seq-track-chips"></div>
+        <div class="seq-msg" id="seq-msg"></div>
+        <div class="seq-body" id="seq-body"></div>
+      </div>
     </section>
 
     <!-- factory preset browser (opens over the MIX page) -->
@@ -102,45 +124,6 @@
       <div class="fx-grid" id="fx-grid"></div>
     </section>
 
-    <!-- SEQ -->
-    <section id="page-seq" class="page hidden">
-      <div class="seq-section">
-        <div class="seq-top">
-          <div class="seq-transport">
-            <button class="seq-btn" id="seq-play" title="Play">&#9654;</button>
-            <button class="seq-btn" id="seq-stop" title="Stop">&#9632;</button>
-            <button class="seq-btn" id="seq-rec" title="Record">&#9679;</button>
-          </div>
-          <div class="seq-modes">
-            <button class="seq-mode active" data-mode="step">STEP</button>
-            <button class="seq-mode" data-mode="chords">CHORDS</button>
-            <button class="seq-mode" data-mode="roll">PIANO ROLL</button>
-          </div>
-          <div class="seq-patterns">
-            <span class="seq-lbl">PATTERN</span>
-            <button class="pattern-btn active" data-pattern="0">1</button>
-            <button class="pattern-btn" data-pattern="1">2</button>
-            <button class="pattern-btn" data-pattern="2">3</button>
-            <button class="pattern-btn" data-pattern="3">4</button>
-            <button class="pattern-btn" data-pattern="4">5</button>
-            <button class="pattern-btn" data-pattern="5">6</button>
-          </div>
-          <div class="seq-length">
-            <span class="seq-lbl">STEPS</span>
-            <button class="len-btn active" data-len="16">16</button>
-            <button class="len-btn" data-len="32">32</button>
-          </div>
-          <div class="seq-bpm">
-            <label>BPM</label>
-            <input type="number" id="seq-bpm-input" min="20" max="300" value="130">
-          </div>
-        </div>
-        <div class="track-chips" id="seq-track-chips"></div>
-        <div class="seq-msg" id="seq-msg"></div>
-        <div class="seq-body" id="seq-body"></div>
-      </div>
-    </section>
-
     <!-- M-ONE -->
     <section id="page-m1" class="page hidden">
       <div class="m1-section">
@@ -158,8 +141,7 @@
         <!-- Sub-tabs -->
         <div class="m1-subtabs">
           <button class="m1-subtab active" data-m1page="play">PLAY</button>
-          <button class="m1-subtab" data-m1page="lib">LIBRARY</button>
-          <button class="m1-subtab" data-m1page="fx">FX</button>
+          <button class="m1-subtab" data-m1page="lib">LIBRARY + FX</button>
         </div>
 
         <!-- PLAY -->
@@ -213,10 +195,6 @@
               <div class="lib-progs" id="lib-progs"></div>
             </div>
           </div>
-        </div>
-
-        <!-- FX -->
-        <div class="m1-subpage" id="m1-fx">
           <div class="m1-fx-row">
             <div class="section-panel m1-fx-panel">
               <div class="m1-fx-header">
@@ -258,7 +236,6 @@
 
   <script src="fx-types.js"></script>
   <script src="presets.js"></script>
-  <script src="progressions.js"></script>
   <script src="seqtrak-sysex.js"></script>
   <script src="m1-sounds.js"></script>
   <script src="m1-library.js"></script>

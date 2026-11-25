@@ -115,7 +115,8 @@ const BLEMidi = (() => {
   }
   // a newer value for the same parameter replaces one still waiting, so moving a knob never builds a backlog
   function keyOf(d) {
-    if (d[0] === 0xF0 && d.length > 9 && (d[2] & 0xF0) === 0x10) return 'sx' + d[2] + ':' + d[6] + ':' + d[7] + ':' + d[8];
+    // single-value Parameter Changes only; sequencer edits (add/delete note, 2x / 7x) must all go out
+    if (d[0] === 0xF0 && d.length === 11 && (d[2] & 0xF0) === 0x10 && !((d[6] >= 0x20 && d[6] <= 0x2F) || (d[6] >= 0x70 && d[6] <= 0x7F))) return 'sx' + d[2] + ':' + d[6] + ':' + d[7] + ':' + d[8];
     if ((d[0] & 0xF0) === 0xB0) return 'cc' + d[0] + ':' + d[1];
     if ((d[0] & 0xF0) === 0xE0) return 'pb' + d[0];
     return null;

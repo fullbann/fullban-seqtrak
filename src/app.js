@@ -1,6 +1,6 @@
 /* ============================================
-   FULLBAN SEQ-TRAK — Main App v4
-   MIX (mixer + sound), DX (2 ops + common), sync from the unit
+   FULLBAN SEQ-TRAK — Main App v8
+   MAIN MIX (mixer + sound), LAUNCH + SEQ (clips, 64 pads, chords, piano roll), DX, FX, M-ONE
    ============================================ */
 
 (async function () {
@@ -160,8 +160,8 @@
   const REG = new Map();              // key -> Set of widgets
   function reg(def, w) {
     const keys = [SEQTRAK.keyOf(def)];
-    if (def.kind === 'sx' && def.cc !== undefined) keys.push(`cc:${def.addr[1] & 0x0F}:${def.cc}`);
-    (def.rx || []).forEach(k => keys.push(k));
+    if (def.kind === 'sx' && def.rxcc !== undefined) keys.push(`cc:${def.rxch ?? (def.addr[1] & 0x0F)}:${def.rxcc}`);
+    if (def.rd) { w._rdKey = sxKey(def.rd); w._rdConv = def.rdConv; keys.push(w._rdKey); }
     keys.forEach(k => { if (!REG.has(k)) REG.set(k, new Set()); REG.get(k).add(w); });
     w._keys = keys;
     return w;
@@ -169,19 +169,62 @@
   function unreg(container) {
     container.querySelectorAll('.knob-wrap, .fb-fader').forEach(w => (w._keys || []).forEach(k => REG.get(k) && REG.get(k).delete(w)));
   }
-  function applyIncoming(key, value) {
+  function applyIncoming(key, value, data) {
     const set = REG.get(key);
     if (!set) return false;
     const now = performance.now();
     // don't let the unit's echo of an older value pull a control back while (or just after) it's being moved
-    set.forEach(w => { if (document.body.contains(w) && !(w._touched && now - w._touched < 700)) w.setValue(value); });
+    set.forEach(w => {
+      if (!document.body.contains(w) || (w._touched && now - w._touched < 700)) return;
+      w.setValue(w._rdKey === key && w._rdConv && data ? w._rdConv(data) : value);
+    });
     return true;
   }
   ['pointerdown', 'pointermove', 'wheel'].forEach(ev => document.addEventListener(ev, e => {
     const w = e.target && e.target.closest && e.target.closest('.knob-wrap, .fb-fader');
     if (w && (ev !== 'pointermove' || e.buttons)) w._touched = performance.now();
   }, { capture: true, passive: true }));
-  function sendDef(def, v) { SEQTRAK.messagesFor(def, v).forEach(m => MIDIManager.send(m)); }
+  const sxKey = a => 'sx:' + a.map(b => b.toString(16).padStart(2, '0')).join('');
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  function sendDefRaw(def, v) { SEQTRAK.messagesFor(def, v).forEach(m => MIDIManager.send(m)); }
+  // every knob/fader move goes through here: send it, and remember it for that track's sound
+  function sendDef(def, v) { sendDefRaw(def, v); recordEdit(def, v); }
+
+  // ---- REMEMBERED EDITS: what you changed on a sound stays with that sound (per track) until RESET ----
+  const EDITS_KEY = 'fbSoundEdits';
+  let soundEdits = {};
+  try { soundEdits = JSON.parse(localStorage.getItem(EDITS_KEY) || '{}') || {}; } catch (e) { soundEdits = {}; }
+  const curSound = new Array(11).fill(null);       // 01 1p 33: catalogue number - 1, per part
+  let editsHold = false;                           // true while the app is scanning sounds (don't re-apply edits)
+  let editsTimer = null;
+  const saveEdits = () => { clearTimeout(editsTimer); editsTimer = setTimeout(() => { try { localStorage.setItem(EDITS_KEY, JSON.stringify(soundEdits)); } catch (e) {} }, 400); };
+  const editSlot = p => (curSound[p] == null ? null : p + ':' + curSound[p]);
+  function partOfDef(def) {                        // which track's SOUND a parameter belongs to (null = not a sound parameter)
+    if (def.kind === 'cc') return def.rd ? def.ch : null;
+    const h = def.addr[0], m = def.addr[1];
+    if (h === 0x31) return m & 0x0F;
+    if (h === 0x48 || h === 0x49) return 9;
+    return null;
+  }
+  function recordEdit(def, v) {
+    const p = partOfDef(def); if (p == null) return;
+    const slot = editSlot(p); if (!slot) return;
+    (soundEdits[slot] = soundEdits[slot] || {})[SEQTRAK.keyOf(def)] = v;
+    saveEdits(); paintEdited(p);
+  }
+  function sendKey(key, v) {
+    if (key.startsWith('sx:')) MIDIManager.send(SEQTRAK.buildParam([0, 1, 2].map(i => parseInt(key.slice(3 + 2 * i, 5 + 2 * i), 16)), v));
+    else { const k = key.split(':'); MIDIManager.send(SEQTRAK.buildCC(+k[1], +k[2], v)); }
+  }
+  const hasEdits = p => { const e = soundEdits[editSlot(p)]; return !!e && Object.keys(e).length > 0; };
+  function paintEdited(p) { document.querySelectorAll(`.reset-btn[data-track="${p}"]`).forEach(b => b.classList.toggle('edited', hasEdits(p))); }
+  function resetButton(p, label) {
+    const b = document.createElement('button');
+    b.className = 'reset-btn' + (hasEdits(p) ? ' edited' : ''); b.dataset.track = p;
+    b.textContent = label || 'RESET'; b.title = 'Put this sound back to how the preset comes';
+    b.onclick = () => resetSound(p);
+    return b;
+  }
 
   // knob bound to a parameter definition
   function pk(def, color, extra) {
@@ -199,7 +242,7 @@
   const reqQueue = [];
   let reqTimer = null;
   function requestDefs(defs) {
-    defs.forEach(d => { if (d && d.kind === 'sx') reqQueue.push(d.addr); });
+    defs.forEach(d => { if (d && d.kind === 'sx') reqQueue.push(d.addr); else if (d && d.rd) reqQueue.push(d.rd); });
     if (!reqTimer) reqTimer = setInterval(() => {
       if (!MIDIManager.isConnected()) return;
       const batch = reqQueue.splice(0, 6);
@@ -209,7 +252,7 @@
   }
   function defsIn(container) {
     const out = [];
-    container.querySelectorAll('.knob-wrap, .fb-fader').forEach(w => { if (w.opts && w.opts.kind === 'sx') out.push(w.opts); });
+    container.querySelectorAll('.knob-wrap, .fb-fader').forEach(w => { if (w.opts && (w.opts.kind === 'sx' || w.opts.rd)) out.push(w.opts); });
     return out;
   }
 
@@ -300,17 +343,28 @@
     stripsEl.appendChild(s);
   });
 
-  // master strip (speaker master volume 00 00 00)
+  // master strip: the SEQTRAK has two masters - speaker (00 00 00) and headphones/line out (00 00 01).
+  // The fader drives whichever one is in use: the unit reports when a lead is plugged in (01 10 07).
+  const masterStrip = document.createElement('div');
+  let hpPlugged = false;
+  function setPlug(v) {
+    hpPlugged = !!v;
+    masterStrip.classList.toggle('phones', hpPlugged);
+    masterStrip.querySelector('.main-out').textContent = hpPlugged ? 'PHONES' : 'SPEAKER';
+  }
   {
-    const s = document.createElement('div');
+    const s = masterStrip;
     s.className = 'strip strip-master';
     s.style.setProperty('--kc', '#ffffff');
-    s.innerHTML = `<div class="strip-name">MAIN</div><div class="strip-snd"></div><div class="strip-spacer"></div>`;
-    const def = SEQTRAK.MASTER_VOLUME;
-    const f = reg(def, Fader(def, '#cfe3ff', v => sendDef(def, v)));
-    const ro = document.createElement('div'); ro.className = 'strip-val';
-    f.onDraw = v => { ro.textContent = v; };
-    s.append(f, ro);
+    s.innerHTML = `<div class="strip-name">MAIN</div><button class="strip-snd main-out" title="Tap to switch between the speaker and the headphone/line output">SPEAKER</button><div class="strip-spacer"></div>`;
+    [[SEQTRAK.MASTER_VOLUME, 'spk'], [SEQTRAK.HP_VOLUME, 'hp']].forEach(([def, id]) => {
+      const box = document.createElement('div'); box.className = 'main-fader main-' + id;
+      const f = reg(def, Fader(def, '#cfe3ff', v => sendDef(def, v)));
+      const ro = document.createElement('div'); ro.className = 'strip-val';
+      f.onDraw = v => { ro.textContent = v; };
+      box.append(f, ro); s.appendChild(box);
+    });
+    s.querySelector('.main-out').onclick = () => setPlug(!hpPlugged);
     const sp = document.createElement('div'); sp.className = 'strip-btns'; s.appendChild(sp);
     stripsEl.appendChild(s);
   }
@@ -324,11 +378,19 @@
     return p;
   }
 
-  function selectTrack(p) {
+  // ONE selected track for the whole app (mix, sequencer, FX, M-One) and for the unit itself
+  const trackSelHooks = [];
+  function selectTrack(p, fromUnit) {
+    if (!(p >= 0 && p <= 10)) return;
+    const changed = p !== selTrack;
     selTrack = p;
     stripsEl.querySelectorAll('.strip').forEach(s => s.classList.toggle('sel', +s.dataset.track === p));
     buildSound(p);
+    if (!fromUnit && MIDIManager.isConnected()) MIDIManager.send(SEQTRAK.buildParam(SEQTRAK.CURRENT_PART, p));
+    trackSelHooks.forEach(fn => { try { fn(p, changed); } catch (e) { console.warn(e); } });
   }
+  document.querySelector('.tab[data-page="dx"]').addEventListener('click', () => { if (selTrack !== 9) selectTrack(9); });
+  document.querySelector('.tab[data-page="m1"]').addEventListener('click', () => { if (typeof m1Target === 'number' && selTrack !== m1Target) selectTrack(m1Target); });
 
   function buildSound(p) {
     unreg(sndGrid);
@@ -348,10 +410,11 @@
     }
     if (grp === 'dx') {
       const go = document.createElement('button');
-      go.className = 'snd-head-go'; go.textContent = 'OPEN DX EDITOR ▸';
+      go.className = 'snd-head-go'; go.textContent = 'DX EDITOR ▸';
       go.onclick = () => document.querySelector('.tab[data-page="dx"]').click();
       sndHead.appendChild(go);
     }
+    sndHead.appendChild(resetButton(p));
     const add = (t, defs, cls) => sndGrid.appendChild(section(t, c, krow(defs, c), cls));
 
     if (grp === 'drum') {
@@ -395,21 +458,12 @@
     if (k < 0 || k >= E.list.length) return;
     curPreset[p] = n;
     SEQTRAK.loadSound(p, 63, (n - 1) >> 7, (n - 1) & 127).forEach(m => MIDIManager.send(m));
-    const want = E.list[k][0];
-    setSoundName(p, want);
-    // read back what the unit actually loaded (bank size of 128 is documented but not measured)
-    setTimeout(async () => {
-      const got = await fetchName(p);
-      if (got && got.toLowerCase() !== want.toLowerCase()) {
-        const el = document.getElementById('snd-head-sound');
-        if (el && p === selTrack) el.textContent = got + '  (asked for ' + want + ')';
-      }
-      if (p === selTrack) requestDefs(defsIn(sndGrid));
-    }, 300);
+    setSoundName(p, E.list[k][0]);
+    onSoundChanged(p);            // reads back the number + name, puts your saved edits back, then the knobs follow
   }
   function stepPreset(p, d) {
     const E = PRESETS[presetEngine(p)];
-    let n = curPreset[p];
+    let n = curSound[p] != null && curSound[p] + 1 >= E.first && curSound[p] + 1 < E.first + E.list.length ? curSound[p] + 1 : curPreset[p];
     if (!n) { const k = E.list.findIndex(x => x[0].toLowerCase() === (soundNames[p] || '').toLowerCase()); n = k >= 0 ? E.first + k : E.first - d; }
     n += d;
     if (n < E.first) n = E.first + E.list.length - 1;
@@ -557,6 +611,7 @@
     dxOps.querySelectorAll('.dx-op').forEach(c => c.classList.toggle('hidden', Math.floor(+c.dataset.op / 2) !== i));
   }
   document.getElementById('dx-op-switch').appendChild(Knob.segment(['OP 1 · 2', 'OP 3 · 4'], 0, showPair));
+  document.getElementById('dx-op-switch').appendChild(resetButton(9, 'RESET DX'));
   showPair(0);
 
   // right side: algorithm, LFO, pitch EG, FM quick
@@ -629,7 +684,8 @@
   function setSoundName(p, name) {
     soundNames[p] = name;
     document.querySelectorAll(`.track-chip[data-track="${p}"]`).forEach(c => { c.title = name; const sm = c.querySelector('small'); if (sm) sm.textContent = name; });
-    const ln = document.querySelector(`.lr[data-track="${p}"] .lr-name small`); if (ln) ln.textContent = name || '—';
+    const ln = document.querySelector(`.lg-track[data-track="${p}"] small`); if (ln) ln.textContent = name || '—';
+    if (typeof seqMode !== 'undefined' && seqMode === 'step' && typeof isDrumPart === 'function' && isDrumPart(p) && isDrumPart(seqTrack)) { const pr = seqBody.querySelector('.pad-row'); if (pr) pr.replaceWith(padRow()); }
     const s = stripsEl.querySelector(`.strip[data-track="${p}"] .strip-snd`);
     if (s) { s.textContent = name; s.title = name; }
     if (p === selTrack) showSoundName();
@@ -644,11 +700,63 @@
   let pcTimers = {};
   function onSoundChanged(p) {
     clearTimeout(pcTimers[p]);
-    pcTimers[p] = setTimeout(() => {
-      fetchName(p);
-      if (p === selTrack) requestDefs(defsIn(sndGrid));
-      if (p === 9) requestDefs(defsIn(document.getElementById('page-dx')));
-    }, 180);
+    pcTimers[p] = setTimeout(() => soundLoaded(p), 220);
+  }
+  async function readSoundNo(p) {
+    const d = await askRetry(SEQTRAK.CURRENT_SOUND(p), 500, 2);
+    if (d && d.length >= 2) curSound[p] = (d[0] << 7) | d[1];
+    return curSound[p];
+  }
+  function refreshKnobs(p) {                       // the knobs follow what the unit now holds
+    if (p === selTrack) requestDefs(defsIn(sndGrid));
+    if (p === 9) requestDefs(defsIn(document.getElementById('page-dx')));
+    if (p === m1Target) requestDefs(defsIn(m1QE).concat(defsIn(m1SN)));
+    paintEdited(p);
+  }
+  async function soundLoaded(p) {
+    if (editsHold) return;
+    await readSoundNo(p);
+    await fetchName(p);
+    const e = soundEdits[editSlot(p)];
+    if (e) { Object.entries(e).forEach(([k, v]) => sendKey(k, v)); await sleep(150); }   // your edits for this sound come back
+    refreshKnobs(p);
+  }
+  // Load by sound number n = what 01 1p 33 reads for that sound, and check what landed.
+  // Factory sounds (n < 4096, catalogue number - 1): bank LSB = n >> 7, program = n & 127.
+  // User sounds (n = their content number, 4096 up) sit in the user banks (LSB 32+) in number order:
+  // slot = n - 4096 on this unit (measured 25 Nov); if sounds get deleted the offset is found by reading back.
+  const USERBASE_KEY = 'fbUserBase2';
+  let userBase = parseInt(localStorage.getItem(USERBASE_KEY), 10) || 4096;
+  async function loadContent(p, c) {
+    let base = userBase;
+    for (let t = 0; t < 4; t++) {
+      const slot = c - base;
+      const tri = c < 4096 ? [c >> 7, c & 127] : (slot >= 0 ? [32 + (slot >> 7), slot & 127] : null);
+      if (!tri) { base = c; continue; }
+      SEQTRAK.loadSound(p, 63, tri[0], tri[1]).forEach(m => MIDIManager.send(m));
+      await sleep(280);
+      const d = await askRetry(SEQTRAK.CURRENT_SOUND(p), 600, 3);
+      if (!d || d.length < 2) continue;
+      const got = (d[0] << 7) | d[1];
+      curSound[p] = got;
+      if (got === c) { if (base !== userBase) { userBase = base; try { localStorage.setItem(USERBASE_KEY, String(base)); } catch (e) {} } return true; }
+      if (c < 4096 || got < 4096) return false;
+      base += got - c;                              // slot was off by (got - c): correct and try again
+    }
+    return false;
+  }
+  // RESET: forget the saved edits for this track's sound and load the sound fresh (a reload clears every
+  // offset on the unit - checked on hardware), then the knobs read the preset's own values back.
+  async function resetSound(p) {
+    if (!MIDIManager.isConnected()) return;
+    if (curSound[p] == null) await readSoundNo(p);
+    const slot = editSlot(p);
+    if (slot && soundEdits[slot]) { delete soundEdits[slot]; saveEdits(); }
+    editsHold = true;
+    try { if (curSound[p] != null) await loadContent(p, curSound[p]); } finally { editsHold = false; }
+    await sleep(120);
+    fetchName(p);
+    refreshKnobs(p);
   }
 
   // ======================================================
@@ -708,12 +816,13 @@
   SEQTRAK.TRACKS.forEach((tk, i) => {
     const c = document.createElement('button');
     c.className = 'track-chip'; c.dataset.track = i; c.textContent = trackShort(i); c.style.borderColor = tk.color;
-    c.onclick = () => { fxTrack = i; buildFxTrack(); };
+    c.onclick = () => selectTrack(i);
     fxChips.appendChild(c);
   });
   fxTrackWrap.append(fxChips, fxTrackBody);
   fxGrid.appendChild(section('TRACK FX + SENDS', '#2d8cf0', fxTrackWrap, 'fx-sec wide'));
   buildFxTrack();
+  trackSelHooks.push(p => { if (p !== fxTrack) { fxTrack = p; buildFxTrack(); if (!document.getElementById('page-fx').classList.contains('hidden')) requestDefs(defsIn(fxTrackBody)); } });
   async function readFxTypes() {
     for (const key of typeLabels.keys()) {
       const addr = [0, 1, 2].map(i => parseInt(key.slice(3 + i * 2, 5 + i * 2), 16));
@@ -752,7 +861,7 @@
       chip.dataset.track = i; chip.style.borderColor = tk.color;
       if (i === seqTrack) { chip.style.background = tk.color; chip.style.color = '#fff'; }
       chip.innerHTML = `<b>${trackShort(i)}</b><small>${soundNames[i] || ''}</small>`;
-      chip.onclick = () => { seqTrack = i; buildSeqChips(); loadTrack(); };
+      chip.onclick = () => selectTrack(i);
       seqTrackChips.appendChild(chip);
     });
   }
@@ -784,7 +893,7 @@
     const tok = ++readToken, p = seqTrack;
     if (isDrumPart(p)) {
       renderSeq();
-      for (let s = 0; s < seqLen; s++) { if (tok !== readToken) return; await readStep(p, s); }
+      for (let s = 0; s < Math.min(seqLen, 64); s++) { if (tok !== readToken) return; await readStep(p, s); }
     } else {
       setBusy(true, 'Reading the pattern from the SEQTRAK...');
       const ok = await readRoll(p);
@@ -824,6 +933,7 @@
     renderSeq();
   }));
   function renderSeq() {
+    unreg(seqBody);
     seqBody.innerHTML = '';
     seqBody.dataset.mode = seqMode;
     if (seqMode === 'step') renderStep();
@@ -835,28 +945,44 @@
   let pickNote = 60;
   function renderStep() {
     const p = seqTrack, tk = SEQTRAK.TRACKS[p], drum = isDrumPart(p);
-    if (!drum) seqBody.appendChild(notePicker());
-    const n = Math.min(seqLen, 64), rows = Math.ceil(n / 16);
-    for (let r = 0; r < rows; r++) {
-      const row = document.createElement('div');
-      row.className = 'step-row';
-      for (let s = r * 16; s < Math.min(n, r * 16 + 16); s++) {
-        const btn = document.createElement('button');
-        btn.className = 'seq-step' + (s % 4 === 0 ? ' beat-start' : '');
-        btn.dataset.step = s;
-        btn.style.setProperty('--tk-color', tk.color);
-        btn.innerHTML = `<i>${s + 1}</i><span></span>`;
-        btn.onclick = () => toggleStep(s);
-        row.appendChild(btn);
-      }
-      seqBody.appendChild(row);
+    const grid = document.createElement('div'); grid.className = 'pad64';
+    for (let s = 0; s < 64; s++) {
+      const btn = document.createElement('button');
+      btn.className = 'seq-step' + (s % 4 === 0 ? ' beat-start' : '') + (s % 16 === 0 ? ' bar-start' : '') + (s >= seqLen ? ' off' : '');
+      btn.dataset.step = s;
+      btn.style.setProperty('--tk-color', tk.color);
+      btn.innerHTML = `<i>${s + 1}</i><span></span>`;
+      btn.onclick = () => { if (s < seqLen) toggleStep(s); };
+      grid.appendChild(btn);
     }
-    for (let s = 0; s < n; s++) paintStep(p, s);
+    seqBody.appendChild(grid);
+    seqBody.appendChild(padRow());
+    for (let s = 0; s < Math.min(seqLen, 64); s++) paintStep(p, s);
     if (!seqMsg.textContent || seqMsg.dataset.auto) {
       seqMsg.dataset.auto = 1;
-      seqMsg.textContent = drum ? 'Tap a step to add or remove it on the SEQTRAK. Best done while stopped.'
-        : 'Pick a note, then tap a step. Tap a filled step to clear it. Chords and lengths: use CHORDS or PIANO ROLL.';
+      seqMsg.textContent = drum ? 'Tap a pad to add or remove a hit. Bottom row: tap a drum to hear it and switch to it.'
+        : 'Bottom row: pick a note, then tap pads to place it. Tap a lit pad to clear it.';
     }
+  }
+  // bottom row of pads: the drum tracks (drum track selected) or a chromatic octave (synth / DX / sampler)
+  function padRow() {
+    const p = seqTrack, w = document.createElement('div'); w.className = 'pad-row';
+    const mk = (html, cls, fn, color) => { const b = document.createElement('button'); b.className = 'pad ' + cls; b.innerHTML = html; if (color) b.style.setProperty('--kc', color); b.onclick = fn; w.appendChild(b); return b; };
+    if (isDrumPart(p)) {
+      SEQTRAK.TRACKS.forEach((tk, i) => {
+        if (!isDrumPart(i)) return;
+        mk(`<b>${trackShort(i)}</b><small>${soundNames[i] || ''}</small>`, 'drum' + (i === p ? ' on' : ''), () => { previewNotes([60], i, 200); if (i !== seqTrack) selectTrack(i); }, tk.color);
+      });
+    } else {
+      const base = Math.floor(pickNote / 12) * 12, color = SEQTRAK.TRACKS[p].color;
+      mk('◀ OCT', 'oct', () => { pickNote = Math.max(0, pickNote - 12); renderSeq(); });
+      for (let n = base; n <= base + 12 && n <= 127; n++) {
+        const black = NOTE_NAMES[n % 12].includes('#');
+        mk(`<b>${noteName(n)}</b>`, 'note' + (black ? ' black' : '') + (n === pickNote ? ' on' : ''), () => { pickNote = n; previewNotes([n], p, 250); renderSeq(); }, color);
+      }
+      mk('OCT ▶', 'oct', () => { pickNote = Math.min(115, pickNote + 12); renderSeq(); });
+    }
+    return w;
   }
   function stepContents(p, s) {
     if (isDrumPart(p)) return steps[p][s];
@@ -893,22 +1019,7 @@
     notes.forEach(n => MIDIManager.send(new Uint8Array([0x90 | ch, n & 0x7F, 100])));
     setTimeout(() => notes.forEach(n => MIDIManager.send(new Uint8Array([0x80 | ch, n & 0x7F, 0]))), ms || 350);
   }
-  function notePicker() {
-    const w = document.createElement('div');
-    w.className = 'seq-notepick';
-    const draw = () => {
-      w.innerHTML = '';
-      const oct = Math.floor(pickNote / 12);
-      const mk = (txt, cls, fn) => { const b = document.createElement('button'); b.className = cls; b.textContent = txt; b.onclick = fn; w.appendChild(b); };
-      mk('◀ OCT', 'np-oct', () => { pickNote = Math.max(0, pickNote - 12); draw(); });
-      NOTE_NAMES.forEach((nm, i) => { const n = oct * 12 + i; mk(noteName(n), 'np-key' + (nm.includes('#') ? ' black' : '') + (n === pickNote ? ' on' : ''), () => { pickNote = n; draw(); previewNotes([n], seqTrack, 250); }); });
-      mk('OCT ▶', 'np-oct', () => { pickNote = Math.min(127, pickNote + 12); draw(); });
-    };
-    draw();
-    return w;
-  }
-
-  // ======================= CHORDS (Pad Perform / OXI style) =======================
+  // ======================= CHORDS =======================
   const SCALES = { 'Major': [0, 2, 4, 5, 7, 9, 11], 'Minor': [0, 2, 3, 5, 7, 8, 10], 'Dorian': [0, 2, 3, 5, 7, 9, 10], 'Mixolydian': [0, 2, 4, 5, 7, 9, 10],
     'Phrygian': [0, 1, 3, 5, 7, 8, 10], 'Lydian': [0, 2, 4, 6, 7, 9, 11], 'Harm Minor': [0, 2, 3, 5, 7, 8, 11], 'Melodic Minor': [0, 2, 3, 5, 7, 9, 11] };
   const CHORD_TYPES = { 'TRIAD': [0, 2, 4], '7TH': [0, 2, 4, 6], '9TH': [0, 2, 4, 6, 8], 'SUS2': [0, 1, 4], 'SUS4': [0, 3, 4], '6TH': [0, 2, 4, 5], 'POWER': 'power' };
@@ -917,12 +1028,6 @@
   try { Object.assign(cs, JSON.parse(localStorage.getItem('fbChordSettings') || '{}'), { brush: null }); } catch (e) {}
   const saveCs = () => { try { const { brush, ...keep } = cs; localStorage.setItem('fbChordSettings', JSON.stringify(keep)); } catch (e) {} };
 
-  function degreeChord(d) {
-    const sc = SCALES[cs.scale] || SCALES.Major, base = 12 * (cs.oct + 2) + cs.key;
-    const at = i => base + sc[i % 7] + 12 * Math.floor(i / 7);
-    let notes = CHORD_TYPES[cs.type] === 'power' ? [at(d), at(d + 4), at(d) + 12] : CHORD_TYPES[cs.type].map(k => at(d + k));
-    return voice(notes);
-  }
   function voice(notes) {
     notes = [...notes].sort((a, b) => a - b);
     for (let i = 0; i < cs.inv; i++) { const lo = notes.shift(); notes.push(lo + 12); }
@@ -954,82 +1059,99 @@
     const clash = (rollEvents[p] || []).filter(e => { const s = Math.floor(e.time / TPS); return s >= step && s < end; });
     rollEdit(p, clash, notes.map(n => ({ time: step * TPS + 60, note: n, vel: 100, gate: lenSteps * TPS - 10 })));
   }
+  // ---- the SEQTRAK's own chord mode: 7 chords (up to 4 notes each) per scale, per track (SYNTH 1/2, DX) ----
+  const proj = { scale: 0, key: 0 };                      // project scale 30 40 7E (0-7), key 30 40 7F (0-11)
+  const chordSets = {};                                   // 'part:scale' -> 7 x [n1, n2, n3, n4] as stored (0 = no note)
+  let chordPad = 0, chordTok = 0;
+  const chordKey = p => p + ':' + proj.scale;
+  const hasChords = p => p >= 7 && p <= 9;
+  async function readChords(p) {
+    const tok = ++chordTok;
+    const sc = await askRetry(SEQTRAK.SCALE.addr, 450, 2); if (sc && sc.length) proj.scale = sc[0] & 7;
+    const ky = await askRetry(SEQTRAK.KEY.addr, 450, 2); if (ky && ky.length) proj.key = Math.max(0, Math.min(11, ky[0] - 0x40));
+    const set = [];
+    for (let pad = 0; pad < 7; pad++) {
+      const notes = [];
+      for (let n = 0; n < 4; n++) {
+        if (tok !== chordTok) return;
+        const d = await askRetry(SEQTRAK.CHORD_NOTE(p, proj.scale, pad, n), 400, 2);
+        notes.push(d && d.length ? d[0] : 0);
+      }
+      set.push(notes);
+    }
+    chordSets[chordKey(p)] = set;
+    if (seqMode === 'chords' && p === seqTrack) renderSeq();
+  }
+  // notes a chord pad plays (the project key moves every chord up, like the unit's keys)
+  const chordNotes = (p, pad) => (((chordSets[chordKey(p)] || [])[pad]) || []).filter(n => n > 0).map(n => Math.min(127, n + proj.key));
   function renderChords() {
     const p = seqTrack, tk = SEQTRAK.TRACKS[p];
-    if (!usesRoll(p)) {
-      seqMsg.textContent = 'Chords need a SYNTH-type track (SYNTH 1/2, DX, SAMPLER, or a drum track re-typed to SYNTH).';
+    if (!hasChords(p)) { seqMsg.textContent = 'The SEQTRAK has chords on SYNTH 1, SYNTH 2 and DX - pick one of those tracks.'; return; }
+    const set = chordSets[chordKey(p)];
+    if (!set) {
+      seqMsg.textContent = MIDIManager.isConnected() ? 'Reading the chords from the SEQTRAK...' : 'Connect the SEQTRAK to see its chords.';
+      if (MIDIManager.isConnected()) readChords(p);
       return;
     }
-    seqMsg.textContent = cs.brush ? `Brush: ${cs.brush.label} - tap the timeline to place it (${cs.len} steps). Tap a chord in the timeline to remove it.`
-      : 'Tap a pad to hear a chord and pick it as the brush, then tap the timeline. Or PLACE a whole progression.';
+    seqMsg.textContent = 'These are the 7 chords on the SEQTRAK\'s own keys (CHORD mode). Tap a chord to hear it, then tap a step to put it in the pattern. Tap a chord in the pattern to remove it.';
     const wrap = document.createElement('div'); wrap.className = 'chd';
-    // controls
     const ctl = document.createElement('div'); ctl.className = 'chd-ctl';
+    // CHORD mode on the unit for this track (31 1p 23 = 2): its keys then play these chords
+    const modeDef = SEQTRAK.P.monoPoly(p);
+    const modeT = Knob.toggle('CHORD MODE ON UNIT', false, v => sendDef(modeDef, v ? 2 : 1));
+    modeT.setValue = v => modeT.setOn(v === 2); modeT.opts = modeDef; modeT.classList.add('knob-wrap'); reg(modeDef, modeT);
+    ctl.appendChild(modeT);
     const sel = (label, opts, val, fn) => {
       const l = document.createElement('label'); l.className = 'chd-sel'; l.innerHTML = `<span>${label}</span>`;
-      const s = document.createElement('select'); opts.forEach(o => { const op = document.createElement('option'); op.value = o; op.textContent = o; if (String(o) === String(val)) op.selected = true; s.appendChild(op); });
-      s.onchange = () => { fn(s.value); saveCs(); renderSeq(); }; l.appendChild(s); ctl.appendChild(l);
+      const s = document.createElement('select');
+      opts.forEach(([v, t]) => { const op = document.createElement('option'); op.value = v; op.textContent = t; if (String(v) === String(val)) op.selected = true; s.appendChild(op); });
+      s.onchange = () => fn(s.value); l.appendChild(s); ctl.appendChild(l);
     };
-    sel('KEY', NOTE_NAMES, NOTE_NAMES[cs.key], v => cs.key = NOTE_NAMES.indexOf(v));
-    sel('SCALE', Object.keys(SCALES), cs.scale, v => cs.scale = v);
-    sel('CHORD', Object.keys(CHORD_TYPES), cs.type, v => cs.type = v);
-    sel('OCTAVE', [1, 2, 3, 4, 5], cs.oct, v => cs.oct = +v);
-    sel('INVERSION', [0, 1, 2, 3], cs.inv, v => cs.inv = +v);
-    sel('LENGTH', [1, 2, 4, 8, 16], cs.len, v => cs.len = +v);
-    const sp = Knob.toggle('SPREAD', cs.spread, v => { cs.spread = v; saveCs(); renderSeq(); }); ctl.appendChild(sp);
+    sel('KEY', NOTE_NAMES.map((n, i) => [i, n]), proj.key, v => { proj.key = +v; cs.key = +v; sendDefRaw(SEQTRAK.KEY, 0x40 + proj.key); renderSeq(); });
+    sel('SCALE', [0, 1, 2, 3, 4, 5, 6, 7].map(i => [i, 'SCALE ' + (i + 1)]), proj.scale, v => { proj.scale = +v; sendDefRaw(SEQTRAK.SCALE, proj.scale); renderSeq(); });
+    sel('LENGTH', [1, 2, 4, 8, 16].map(n => [n, n + (n === 1 ? ' STEP' : ' STEPS')]), cs.len, v => { cs.len = +v; saveCs(); });
     const clr = document.createElement('button'); clr.className = 'chd-clear'; clr.textContent = 'CLEAR PATTERN';
     clr.onclick = () => { if (confirm('Clear every note on this track\'s pattern?')) rollEdit(p, rollEvents[p] || [], []); };
     ctl.appendChild(clr);
     wrap.appendChild(ctl);
-    // degree pads
+    // the 7 chord pads
     const pads = document.createElement('div'); pads.className = 'chd-pads';
     for (let d = 0; d < 7; d++) {
-      const notes = degreeChord(d), nm = chordName(notes);
+      const notes = chordNotes(p, d);
       const b = document.createElement('button');
-      b.className = 'chd-pad' + (cs.brush && cs.brush.label === nm ? ' on' : '');
+      b.className = 'chd-pad' + (d === chordPad ? ' on' : '');
       b.style.setProperty('--kc', tk.color);
-      b.innerHTML = `<i>${ROMAN[d]}</i><b>${nm}</b><small>${notes.map(noteName).join(' ')}</small>`;
-      b.onclick = () => { previewNotes(notes, p, 600); cs.brush = { label: nm, notes }; renderSeq(); };
+      b.innerHTML = `<i>CHORD ${d + 1}</i><b>${notes.length ? chordName(notes) : '—'}</b><small>${notes.map(noteName).join(' ')}</small>`;
+      b.onclick = () => { chordPad = d; if (notes.length) previewNotes(notes, p, 600); renderSeq(); };
       pads.appendChild(b);
     }
     wrap.appendChild(pads);
-    // progressions (Chris's Fullban set)
-    const pr = document.createElement('div'); pr.className = 'chd-prog';
-    const genres = [...new Set(PROGRESSIONS.map(x => x.g))];
-    const list = PROGRESSIONS.filter(x => x.g === cs.genre);
-    if (cs.prog >= list.length) cs.prog = 0;
-    const gs = document.createElement('select'); genres.forEach(g => { const o = document.createElement('option'); o.textContent = g; if (g === cs.genre) o.selected = true; gs.appendChild(o); });
-    gs.onchange = () => { cs.genre = gs.value; cs.prog = 0; saveCs(); renderSeq(); };
-    const ps = document.createElement('select'); list.forEach((x, i) => { const o = document.createElement('option'); o.value = i; o.textContent = x.n.replace(/^Fullban [^-]*- /, '') + ` (${x.r} ${x.s})`; if (i === cs.prog) o.selected = true; ps.appendChild(o); });
-    ps.onchange = () => { cs.prog = +ps.value; saveCs(); renderSeq(); };
-    const prog = list[cs.prog];
-    const octShift = n => n + 12 * (cs.oct - 1);              // his files are written low (recording octave 2)
-    const place = document.createElement('button'); place.className = 'chd-place'; place.textContent = 'PLACE ▸';
-    place.onclick = () => {
-      if (!prog) return;
-      const k = prog.c.length, span = Math.max(1, Math.floor(seqLen / k));
-      const add = [];
-      prog.c.forEach(([nm, notes], i) => voice(notes.map(octShift)).forEach(n => add.push({ time: i * span * TPS + 60, note: n, vel: 100, gate: span * TPS - 10 })));
-      rollEdit(p, rollEvents[p] || [], add);
-    };
-    pr.innerHTML = '<span class="chd-lbl">PROGRESSION</span>';
-    pr.append(gs, ps, place);
-    const pchords = document.createElement('div'); pchords.className = 'chd-pchords';
-    (prog ? prog.c : []).forEach(([nm, notes]) => {
-      const v = voice(notes.map(octShift));
-      const b = document.createElement('button'); b.className = 'chd-pc' + (cs.brush && cs.brush.label === nm ? ' on' : ''); b.textContent = nm;
-      b.onclick = () => { previewNotes(v, p, 600); cs.brush = { label: nm, notes: v }; renderSeq(); };
-      pchords.appendChild(b);
+    // change the notes of the picked chord (written straight to the SEQTRAK)
+    const ed = document.createElement('div'); ed.className = 'chd-edit';
+    ed.innerHTML = `<span class="chd-lbl">CHORD ${chordPad + 1} NOTES</span>`;
+    set[chordPad].forEach((raw, n) => {
+      const box = document.createElement('div'); box.className = 'chd-note' + (raw ? '' : ' off');
+      const write = v => {
+        set[chordPad][n] = v;
+        MIDIManager.send(SEQTRAK.buildParam(SEQTRAK.CHORD_NOTE(p, proj.scale, chordPad, n), v));
+        const now = chordNotes(p, chordPad); if (now.length) previewNotes(now, p, 500);
+        renderSeq();
+      };
+      const mk = (t, fn) => { const x = document.createElement('button'); x.textContent = t; x.onclick = fn; box.appendChild(x); return x; };
+      mk('−', () => write(Math.max(0x24, (raw || 0x3C) - 1)));
+      const nm = document.createElement('b'); nm.textContent = raw ? noteName(Math.min(127, raw + proj.key)) : 'OFF'; box.appendChild(nm);
+      mk('+', () => write(Math.min(0x60, (raw || 0x3B) + 1)));
+      mk(raw ? 'OFF' : 'ON', () => write(raw ? 0 : 0x3C)).className = 'chd-off';
+      ed.appendChild(box);
     });
-    pr.appendChild(pchords);
-    wrap.appendChild(pr);
+    wrap.appendChild(ed);
     // timeline
     const tl = document.createElement('div'); tl.className = 'chd-tl';
     tl.style.gridTemplateColumns = `repeat(${seqLen}, 1fr)`;
     for (let s = 0; s < seqLen; s++) {
       const c = document.createElement('button'); c.className = 'chd-cell' + (s % 4 === 0 ? ' beat' : '');
       c.style.gridColumn = `${s + 1}`; c.textContent = s + 1;
-      c.onclick = () => { if (cs.brush) placeChord(s, cs.brush.notes, Math.min(cs.len, seqLen - s)); };
+      c.onclick = () => { const notes = chordNotes(p, chordPad); if (notes.length) placeChord(s, notes, Math.min(cs.len, seqLen - s)); };
       tl.appendChild(c);
     }
     chordBlocks(p).forEach(b => {
@@ -1219,7 +1341,13 @@
     const bpm = Math.max(5, Math.min(300, parseInt(e.target.value) || 120));
     MIDIManager.send(SEQTRAK.buildParamData([0x30, 0x40, 0x76], [(bpm >> 7) & 0x7F, bpm & 0x7F]));   // 02-sysex-format example
   });
-  document.querySelector('.tab[data-page="seq"]').addEventListener('click', () => { buildSeqChips(); loadTrack(); MIDIManager.send(SEQTRAK.buildRequest([0x30, 0x40, 0x76])); });
+  const launchVisible = () => !document.getElementById('page-launch').classList.contains('hidden');
+  trackSelHooks.push(p => {
+    seqTrack = p; buildSeqChips();
+    if (typeof paintLaunchSel === 'function') paintLaunchSel();
+    if (launchVisible() && MIDIManager.isConnected()) loadTrack(); else renderSeq();
+  });
+  seqTrack = selTrack;
   buildSeqChips();
   renderSeq();
 
@@ -1244,64 +1372,42 @@
     launchGrid.querySelectorAll('.lr-s').forEach(b => b.classList.toggle('on', +b.dataset.track === soloPart));
     stripsEl.querySelectorAll('.strip-s').forEach((b, i) => b.classList.toggle('on', i === soloPart));
   }
-  // scene memory: 8 slots, each = a pattern number per track. 1-6 start as "every track on pattern n"
-  let scenes = (() => { try { const v = JSON.parse(localStorage.getItem('fbScenes')); if (Array.isArray(v) && v.length === 8) return v; } catch (e) {} return null; })()
-    || [0, 1, 2, 3, 4, 5].map(n => new Array(11).fill(n)).concat([null, null]);
-  let storeArmed = false;
-  function saveScenes() { try { localStorage.setItem('fbScenes', JSON.stringify(scenes)); } catch (e) {} }
-  function sceneMatch(i) { return !!scenes[i] && scenes[i].every((n, p) => patSel[p] === n); }
-  function paintScenes() { launchGrid.querySelectorAll('.sb-scene').forEach(b => b.classList.toggle('on', sceneMatch(+b.dataset.scene))); }
-  function storeScene(i) { scenes[i] = SEQTRAK.TRACKS.map((t, p) => patSel[p] || 0); saveScenes(); storeArmed = false; renderLaunch(); }
-  function recallScene(i) {
-    const sc = scenes[i]; if (!sc) { storeArmed = true; renderLaunch(); return; }
-    ensureMode();
-    sc.forEach((n, p) => { if (patSel[p] === n) return; sendDef(SEQTRAK.PATTERN_SELECT(p), n); const c = launchGrid.querySelector(`.lr-clip[data-track="${p}"][data-pat="${n}"]`); if (c) c.classList.add('queued'); });
-    setTimeout(async () => { for (let p = 0; p < 11; p++) await confirmPattern(p); }, 250);
-  }
+  // tracks across the top (they are also the track selector for the sequencer underneath), 6 scenes down:
+  // scene n = every track on its pattern n
+  const sceneOn = n => patSel.every(v => v === n);
+  function paintScenes() { launchGrid.querySelectorAll('.lg-scene').forEach(b => b.classList.toggle('on', sceneOn(+b.dataset.scene))); }
+  function paintLaunchSel() { launchGrid.querySelectorAll('.lg-track').forEach(c => c.classList.toggle('sel', +c.dataset.track === selTrack)); }
   function renderLaunch() {
     launchGrid.innerHTML = '';
-    const head = document.createElement('div'); head.className = 'lr lr-head';
-    // 8 scene memories across the top (the unit has 6 patterns per track, a scene is any mix of them)
-    const bar = document.createElement('div'); bar.className = 'scene-bar';
-    bar.innerHTML = '<div class="sb-label">SCENES</div>';
-    for (let i = 0; i < 8; i++) {
-      const b = document.createElement('button'); b.className = 'sb-scene' + (scenes[i] ? '' : ' empty') + (sceneMatch(i) ? ' on' : '');
-      b.dataset.scene = i;
-      b.innerHTML = `<b>${i + 1}</b><small>${scenes[i] ? scenes[i].map(n => n + 1).join('') : 'EMPTY'}</small>`;
-      b.onclick = () => storeArmed ? storeScene(i) : recallScene(i);
-      bar.appendChild(b);
-    }
-    const st = document.createElement('button'); st.className = 'sb-store' + (storeArmed ? ' armed' : '');
-    st.textContent = storeArmed ? 'TAP A SCENE' : 'STORE';
-    st.onclick = () => { storeArmed = !storeArmed; renderLaunch(); };
-    bar.appendChild(st);
-    launchGrid.appendChild(bar);
-    head.innerHTML = '<div class="lr-name">TRACKS</div>';
-    for (let n = 0; n < 6; n++) {
-      const b = document.createElement('button'); b.className = 'lr-scene'; b.innerHTML = `▶ ALL ${n + 1}`;
-      b.onclick = () => launchScene(n);
-      head.appendChild(b);
-    }
-    head.insertAdjacentHTML('beforeend', '<div class="lr-ms">M / S</div>');
-    launchGrid.appendChild(head);
+    const head = document.createElement('div'); head.className = 'lg-row lg-head';
+    head.innerHTML = '<div class="lg-corner">SCENES</div>';
     SEQTRAK.TRACKS.forEach((tk, p) => {
-      const r = document.createElement('div'); r.className = 'lr'; r.dataset.track = p; r.style.setProperty('--kc', tk.color);
-      r.innerHTML = `<div class="lr-name"><b>${trackShort(p)}</b><small>${soundNames[p] || '—'}</small></div>`;
-      for (let n = 0; n < 6; n++) {
+      const c = document.createElement('div');
+      c.className = 'lg-track' + (p === selTrack ? ' sel' : ''); c.dataset.track = p; c.style.setProperty('--kc', tk.color);
+      c.innerHTML = `<button class="lg-name"><b>${trackShort(p)}</b><em>${typeName(p)}</em><small>${soundNames[p] || '—'}</small></button>` +
+        `<div class="lg-ms"><button class="lr-m${muted[p] ? ' on' : ''}" data-track="${p}">M</button><button class="lr-s${soloPart === p ? ' on' : ''}" data-track="${p}">S</button></div>`;
+      c.querySelector('.lg-name').onclick = () => selectTrack(p);
+      c.querySelector('.lr-m').onclick = () => setMute(p, !muted[p]);
+      c.querySelector('.lr-s').onclick = () => setSolo(p);
+      head.appendChild(c);
+    });
+    launchGrid.appendChild(head);
+    for (let n = 0; n < 6; n++) {
+      const r = document.createElement('div'); r.className = 'lg-row';
+      const sb = document.createElement('button'); sb.className = 'lg-scene' + (sceneOn(n) ? ' on' : ''); sb.dataset.scene = n;
+      sb.innerHTML = `▶ <b>${n + 1}</b>`;
+      sb.onclick = () => launchScene(n);
+      r.appendChild(sb);
+      SEQTRAK.TRACKS.forEach((tk, p) => {
         const c = document.createElement('button');
         c.className = 'lr-clip' + (patSel[p] === n ? ' on' : '');
-        c.dataset.track = p; c.dataset.pat = n;
+        c.dataset.track = p; c.dataset.pat = n; c.style.setProperty('--kc', tk.color);
         c.innerHTML = `<span>${n + 1}</span>`;
         c.onclick = () => launchClip(p, n);
         r.appendChild(c);
-      }
-      const ms = document.createElement('div'); ms.className = 'lr-ms';
-      ms.innerHTML = `<button class="lr-m${muted[p] ? ' on' : ''}" data-track="${p}">M</button><button class="lr-s${soloPart === p ? ' on' : ''}" data-track="${p}">S</button>`;
-      ms.querySelector('.lr-m').onclick = () => setMute(p, !muted[p]);
-      ms.querySelector('.lr-s').onclick = () => setSolo(p);
-      r.appendChild(ms);
+      });
       launchGrid.appendChild(r);
-    });
+    }
   }
   function paintClips(p) {
     launchGrid.querySelectorAll(`.lr-clip[data-track="${p}"]`).forEach(c => {
@@ -1314,8 +1420,10 @@
   function ensureMode() { if (!modeSet) { MIDIManager.send(SEQTRAK.buildParam(SEQTRAK.PATTERN_MODE, 1)); modeSet = true; } }
   async function confirmPattern(p) {
     const d = await askRetry(SEQTRAK.PATTERN_SELECT(p).addr, 500, 2);
+    const was = patSel[p];
     if (d && d.length) patSel[p] = d[0];
     paintClips(p);
+    if (p === seqTrack && was !== patSel[p]) { steps[p].fill(null); rollEvents[p] = null; loadTrack(); }   // the sequencer shows the pattern now playing
   }
   function launchClip(p, n) {
     ensureMode();
@@ -1330,14 +1438,15 @@
     setTimeout(async () => { for (let p = 0; p < 11; p++) await confirmPattern(p); }, 250);
   }
   function launchPlaying(v) { document.querySelectorAll('.launch-play').forEach(b => b.classList.toggle('on', v)); }
-  document.querySelector('.launch-play').onclick = () => { MIDIManager.send(new Uint8Array([0xFA])); setPlaying(true); };
-  document.querySelector('.launch-stop').onclick = () => { MIDIManager.send(new Uint8Array([0xFC])); setPlaying(false); };
   onTracks(renderLaunch);
   document.querySelector('.tab[data-page="launch"]').addEventListener('click', async () => {
     renderLaunch();
-    if (!MIDIManager.isConnected()) return;
+    if (!MIDIManager.isConnected()) { renderSeq(); return; }
+    MIDIManager.send(SEQTRAK.buildRequest([0x30, 0x40, 0x76]));
     for (let p = 0; p < 11; p++) await confirmPattern(p);
+    loadTrack();
   });
+  document.getElementById('clips-toggle').onclick = e => { const c = launchGrid.classList.toggle('collapsed'); e.currentTarget.textContent = c ? 'CLIPS ▾' : 'CLIPS ▴'; };
   // strip mute/solo buttons share the same state
   stripsEl.querySelectorAll('.strip[data-track]').forEach(s => {
     const p = +s.dataset.track, m = s.querySelector('.strip-m'), so = s.querySelector('.strip-s');
@@ -1373,14 +1482,23 @@
       const b = document.createElement('button');
       b.className = 'm1-target-btn' + (p === m1Target ? ' active' : '');
       b.dataset.track = p; b.textContent = trackShort(p);
-      b.onclick = () => {
-        m1Target = p;
-        m1TargetEl.querySelectorAll('.m1-target-btn').forEach(x => x.classList.toggle('active', x === b));
-        m1TargetHooks.forEach(fn => fn());
-      };
+      b.onclick = () => { if (p === selTrack) setM1Target(p); else selectTrack(p); };
       m1TargetEl.appendChild(b);
     });
+    placeM1Reset();
   }
+  function placeM1Reset() {
+    document.querySelectorAll('.m1-learn .reset-btn').forEach(b => b.remove());
+    document.querySelector('.m1-learn').appendChild(resetButton(m1Target, 'RESET SOUND'));
+  }
+  function setM1Target(p) {
+    if (p === m1Target || trackType[p] !== 2) return;
+    m1Target = p;
+    m1TargetEl.querySelectorAll('.m1-target-btn').forEach(x => x.classList.toggle('active', +x.dataset.track === p));
+    placeM1Reset();
+    m1TargetHooks.forEach(fn => fn());
+  }
+  trackSelHooks.push(p => setM1Target(p));
   buildM1Targets();
 
   // ---- PLAY sub-page ----
@@ -1432,7 +1550,7 @@
     const F = SEQTRAK.FX, P = SEQTRAK.P;
     if (cat === 0) return { type: F.revType, on: F.revOn, knobs: [...F.revP, F.revReturn, Object.assign(P.reverb(p), { label: 'SEND' })] };
     if (cat === 1) return { type: F.dlyType, on: F.dlyOn, knobs: [...F.dlyP, F.dlyReturn, Object.assign(P.delay(p), { label: 'SEND' }), F.dlyToRev] };
-    if (cat === 2) return { note: 'Track insert effect - its three FX knobs', knobs: F.trackP(p) };
+    if (cat === 2) return { type: { kind: 'sx', addr: SEQTRAK.INS_TYPE(p), label: 'TYPE' }, knobs: F.trackP(p) };
     return { note: 'Track EQ', knobs: [P.eqLow(p), P.eqHigh(p)] };
   }
   function buildM1Fx(panel) {
@@ -1474,7 +1592,7 @@
     });
     buildM1Fx(panel);
   });
-  document.querySelector('.m1-subtab[data-m1page="fx"]').addEventListener('click', () => { buildM1Fx(0); buildM1Fx(1); });
+  document.querySelector('.m1-subtab[data-m1page="lib"]').addEventListener('click', () => { buildM1Fx(0); buildM1Fx(1); });
   m1TargetHooks.push(() => { buildM1Fx(0); buildM1Fx(1); });
 
   // ---- PLAY page preset grid (M-One plugin style) ----
@@ -1531,77 +1649,45 @@
   }));
 
   // ---- Load sound ----
-  // M1 sounds are USER sounds. Their slot in the user bank (MSB 63, LSB 32+, program) is
-  // the order they were created in, so LEARN steps through the user bank once on the
-  // target track and reads each loaded name back (01 1p 35) - the method verified in
-  // seqtrak-docs 06. The map is kept in this browser.
-  const USERMAP_KEY = 'fbSeqtrakUserBank';
-  let userMap = {};
-  try { userMap = JSON.parse(localStorage.getItem(USERMAP_KEY) || '{}'); } catch (e) { userMap = {}; }
-  const norm = n => String(n || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  // The 100 M1 sounds are user sounds with fixed catalogue numbers (4210-4309). They are loaded by number:
+  // the app sends the user-bank slot, reads back which number landed (01 1p 33) and corrects itself, so every
+  // sound loads without a LEARN pass. One load at a time; a newer pick replaces one still waiting.
   const learnBtn = document.getElementById('m1-learn');
   const learnStatus = document.getElementById('m1-learn-status');
-  function learnLabel() {
-    const n = Object.keys(userMap).length;
-    const m1 = M1_SOUNDS.SOUNDS ? M1_SOUNDS.SOUNDS.filter(s => userMap[norm(s.name)]).length : 0;
-    learnStatus.textContent = n ? `${m1}/100 M1 sounds mapped (${n} user sounds)` : 'Tap LEARN once so the app can find your M1 sounds';
+  let loadChain = Promise.resolve(), loadTok = 0;
+  function queueLoad(p, c) {
+    const tok = ++loadTok;
+    const run = async () => {
+      if (tok !== loadTok) return null;                      // superseded while waiting
+      editsHold = true;
+      try { return await loadContent(p, c); } finally { editsHold = false; }
+    };
+    loadChain = loadChain.then(run, run);
+    return loadChain.then(ok => (tok === loadTok ? ok : null));
   }
-  learnLabel();
-
-  let learning = false;
+  learnBtn.textContent = 'CHECK M1';
   learnBtn.addEventListener('click', async () => {
-    if (learning) { learning = false; return; }
     if (!MIDIManager.isConnected()) { learnStatus.textContent = 'Connect to the SEQTRAK first'; return; }
-    learning = true; learnBtn.textContent = 'STOP';
-    const p = m1Target, found = {};
-    let prev = null, total = 0;
-    for (let lsb = 32; lsb < 48 && learning; lsb++) {
-      let newHere = 0, sinceNew = 0;
-      for (let prog = 0; prog < 128 && learning; prog++) {
-        SEQTRAK.loadSound(p, 63, lsb, prog).forEach(m => MIDIManager.send(m));
-        await new Promise(r => setTimeout(r, 140));
-        let d = await askRetry(SEQTRAK.soundNameAddr(p), 600, 2);
-        if (!d) {   // no reply (busy link) - send the sound again and wait longer rather than skip it
-          SEQTRAK.loadSound(p, 63, lsb, prog).forEach(m => MIDIManager.send(m));
-          await new Promise(r => setTimeout(r, 400));
-          d = await askRetry(SEQTRAK.soundNameAddr(p), 900, 3);
-        }
-        const name = d ? SEQTRAK.decodeName(d) : null;
-        if (!d) { learnStatus.textContent = `Learning... bank ${lsb - 31}, slot ${prog + 1} - no reply, carrying on`; continue; }
-        if (name && name !== prev) {
-          if (!found[norm(name)]) found[norm(name)] = [lsb, prog, name];
-          prev = name; newHere++; total++; sinceNew = 0;
-        } else sinceNew++;
-        learnStatus.textContent = `Learning... bank ${lsb - 31}, slot ${prog + 1} - ${total} sounds found (last: ${prev || '-'})`;
-        if (sinceNew >= 24 && newHere > 0) break;      // past the end of this bank's sounds
-        if (sinceNew >= 24 && newHere === 0) break;    // empty bank
-      }
-      if (newHere === 0) break;
-    }
-    if (Object.keys(found).length) {
-      userMap = Object.assign({}, userMap, found);   // a second LEARN adds to the first, never loses what it already found
-      try { localStorage.setItem(USERMAP_KEY, JSON.stringify(userMap)); } catch (e) {}
-    }
-    learning = false; learnBtn.textContent = 'LEARN';
-    learnLabel();
-    const missing = M1_SOUNDS.SOUNDS ? M1_SOUNDS.SOUNDS.filter(s => !userMap[norm(s.name)]).map(s => s.name.replace(/^M1 /, '')) : [];
-    if (missing.length) learnStatus.textContent += ` - missing: ${missing.slice(0, 8).join(', ')}${missing.length > 8 ? ` +${missing.length - 8} more` : ''} (tap LEARN again to add them)`;
-    const piano = userMap[norm('M1 Piano')];
-    if (piano) SEQTRAK.loadSound(p, 63, piano[0], piano[1]).forEach(m => MIDIManager.send(m));
+    const p = m1Target, was = curSound[p];
+    learnStatus.textContent = 'Checking the M1 sounds on the SEQTRAK...';
+    const first = await queueLoad(p, M1_SOUNDS.getById(0).content);
+    const last = await queueLoad(p, M1_SOUNDS.getById(99).content);
+    learnStatus.textContent = first && last ? 'All 100 M1 sounds found on the SEQTRAK' : 'The M1 sounds were not found where expected - are they still on this SEQTRAK?';
+    if (was != null) await queueLoad(p, was);
+    soundLoaded(p);
   });
+  learnStatus.textContent = '';
 
-  function loadM1(sound) {
+  async function loadM1(sound) {
     m1Loaded = sound.id;
     if (typeof renderPresetGrid === 'function') renderPresetGrid();
-    const hit = userMap[norm(sound.name)];
-    const tname = trackShort(m1Target);
-    if (!hit) {
-      m1LoadedName.textContent = `${sound.name} not mapped yet - tap LEARN`;
-      return;
-    }
-    SEQTRAK.loadSound(m1Target, 63, hit[0], hit[1]).forEach(m => MIDIManager.send(m));
-    m1LoadedName.textContent = `${sound.name} → ${tname}`;
-    onSoundChanged(m1Target);                     // read the name back to confirm
+    const p = m1Target;
+    if (!MIDIManager.isConnected()) { m1LoadedName.textContent = `${sound.name} - connect the SEQTRAK`; return; }
+    m1LoadedName.textContent = `${sound.name} → ${trackShort(p)}`;
+    const ok = await queueLoad(p, sound.content);
+    if (ok === null) return;                                 // a newer pick took over
+    if (!ok) m1LoadedName.textContent = `${sound.name}: the SEQTRAK loaded something else - tap CHECK M1`;
+    await soundLoaded(p);
     const el = document.getElementById('m1-loaded');
     el.classList.add('flash');
     setTimeout(() => el.classList.remove('flash'), 600);
@@ -1645,21 +1731,57 @@
       libProgsEl.appendChild(t);
     });
   }
-  function applyProgram(bank, k) {
+  // M1 effect -> the nearest SEQTRAK effect [type MSB, LSB] (effect-types table). Reverbs go to the send reverb,
+  // delays to the send delay, everything else to the track's own effect (Insertion A).
+  const M1REV = { 0: [1, 0x03], 1: [1, 0x00], 2: [1, 0x01], 3: [1, 0x13], 4: [1, 0x10], 5: [1, 0x12], 6: [1, 0x11], 7: [1, 0x11], 8: [1, 0x11] };
+  const M1DLY = { 9: [2, 0x40], 10: [2, 0x00] };
+  const M1INS = { 11: [3, 0x20], 12: [3, 0x00], 13: [4, 0x10], 14: [4, 0x00], 15: [5, 0x10], 16: [5, 0x00], 17: [6, 0x10], 18: [6, 0x10],
+    20: [7, 0x00], 21: [7, 0x20], 23: [3, 0x30], 24: [6, 0x20] };
+  const M1DUAL2 = [0, 3, 6, 9, 11, 13, 16, 18];             // second half of Delay/Hall ... Delay/Tremolo
+  function applyM1Fx(d, part) {
+    const P = SEQTRAK.P, F = SEQTRAK.FX;
+    let rev = null, dly = null, ins = null, revSend = 0, dlySend = 0;
+    const names = [];
+    [0, 1].forEach(k => {
+      const t = d.fx.type[k];
+      if (t >= 33 || !d.fx.on[k]) return;
+      names.push(M1Lib.FX_NAMES[t]);
+      const amt = Math.round(d.fx.bal[k] * 0.9);             // M1 balance 0-100 -> send level
+      (t >= 25 ? [9, M1DUAL2[t - 25]] : [t]).forEach(u => {
+        if (M1REV[u]) { rev = rev || M1REV[u]; revSend = Math.max(revSend, amt); }
+        else if (M1DLY[u]) { dly = dly || M1DLY[u]; dlySend = Math.max(dlySend, amt); }
+        else if (M1INS[u]) ins = ins || M1INS[u];
+      });
+    });
+    if (rev) MIDIManager.send(SEQTRAK.buildParamData(F.revType.addr, rev));
+    if (dly) MIDIManager.send(SEQTRAK.buildParamData(F.dlyType.addr, dly));
+    if (ins) MIDIManager.send(SEQTRAK.buildParamData(SEQTRAK.INS_TYPE(part), ins));
+    sendDefRaw(P.reverb(part), Math.min(127, revSend));
+    sendDefRaw(P.delay(part), Math.min(127, dlySend));
+    // show what was set in the two effect panels
+    m1FxCat[0] = 0; m1FxCat[1] = ins && !dly ? 2 : 1;
+    [0, 1].forEach(panel => document.getElementById(`m1-fx${panel + 1}-cats`).querySelectorAll('.m1-fxcat').forEach((b, i) => b.classList.toggle('active', i === m1FxCat[panel])));
+    return names;
+  }
+  async function applyProgram(bank, k) {
     const p = bank.progs[k], d = M1Lib.describe(p), part = m1Target;
     if (d.mode === 2) { libInfo.textContent = `${d.name}: M1 drum programs aren't supported on the SEQTRAK yet.`; return; }
     const ms = M1_SOUNDS.getById(d.ms1);
-    const hit = ms && userMap[norm(ms.name)];
-    if (!hit) { libInfo.textContent = `${d.name} uses "${ms ? ms.name : 'multisound ' + d.ms1}" - tap LEARN on the PLAY tab first so the app can find it.`; return; }
-    SEQTRAK.loadSound(part, 63, hit[0], hit[1]).forEach(m => MIDIManager.send(m));
-    setTimeout(() => {
-      M1Lib.paramsFor(d, part).forEach(([def, v]) => sendDef(def, v));
-      if (part === selTrack) requestDefs(defsIn(sndGrid));
-    }, 350);
+    if (!ms) { libInfo.textContent = `${d.name} uses multisound ${d.ms1}, which isn't one of the 100 on the SEQTRAK.`; return; }
+    if (!MIDIManager.isConnected()) { libInfo.textContent = 'Connect the SEQTRAK first.'; return; }
     libLoadedKey = bank.name + '#' + k;
     m1LoadedName.textContent = `${d.name} (${bank.name}) → ${trackShort(part)}`;
-    libInfo.textContent = `${d.name}: ${ms.name}${d.mode === 1 ? ' (double program - OSC 1 only for now)' : ''}, cutoff ${d.cutoff}, EG int ${d.egInt}, level ${d.level}${d.oct1 ? ', octave ' + (d.oct1 > 0 ? '+' : '') + d.oct1 : ''}`;
     renderLib();
+    const ok = await queueLoad(part, ms.content);
+    if (ok === null) return;
+    if (!ok) { libInfo.textContent = `${d.name}: couldn't load "${ms.name}" on the SEQTRAK - tap CHECK M1 on the PLAY tab.`; return; }
+    M1Lib.paramsFor(d, part).forEach(([def, v]) => sendDefRaw(def, v));
+    const fx = applyM1Fx(d, part);
+    await sleep(250);
+    fetchName(part);
+    refreshKnobs(part);
+    buildM1Fx(0); buildM1Fx(1);
+    libInfo.textContent = `${d.name}: ${ms.name}${d.mode === 1 ? ' (double program - OSC 1 only for now)' : ''} · FX: ${fx.length ? fx.join(' + ') : 'none'} · cutoff ${d.cutoff}, EG int ${d.egInt}${d.oct1 ? ', octave ' + (d.oct1 > 0 ? '+' : '') + d.oct1 : ''}`;
   }
   document.getElementById('lib-files').addEventListener('change', async e => {
     const files = e.target.files;
@@ -1709,12 +1831,16 @@
       else if (pc.addr[0] === 0x01 && pc.addr[1] === 0x33 && pc.addr[2] === 0x01) setTimeout(readTypes, 300);   // a drum track was re-typed
       else if (pc.addr[0] === 0x70 && (pc.addr[1] & 0xF0) === 0x40) {
         const p = pc.addr[1] & 0x0F, st = pc.addr[2], d = pc.data;
-        if (p < 11 && st < 32) { steps[p][st] = d.length >= 6 ? { note: d[0], vel: d[1], gate: (d[4] << 7) | d[5] } : false; paintStep(p, st); }
+        if (p < 11 && st < 128) { steps[p][st] = d.length >= 6 ? { note: d[0], vel: d[1], gate: (d[4] << 7) | d[5] } : false; paintStep(p, st); }
       }
+      if (pc.key === 'sx:011027' && pc.data.length) { if (pc.data[0] !== selTrack) selectTrack(pc.data[0], true); }      // track picked on the unit
+      else if (pc.key === 'sx:011007' && pc.data.length) setPlug(pc.data[0]);                                            // headphones / line lead in or out
+      else if (pc.key === 'sx:30407e' && pc.data.length && (pc.data[0] & 7) !== proj.scale) { proj.scale = pc.data[0] & 7; if (seqMode === 'chords') renderSeq(); }
+      else if (pc.key === 'sx:30407f' && pc.data.length) { const k = Math.max(0, Math.min(11, pc.data[0] - 0x40)); if (k !== proj.key) { proj.key = k; if (seqMode === 'chords') renderSeq(); } }
       if (pc.addr[0] === 0x30 && pc.addr[2] === 0x00 && pc.addr[1] >= 0x41 && pc.addr[1] <= 0x45 && pc.data.length >= 2) {
         setTypeName(pc.key, SEQTRAK.fxTypeName(pc.data[0], pc.data[1]));
       }
-      if (pc.data.length) applyIncoming(pc.key, pc.value);
+      if (pc.data.length) applyIncoming(pc.key, pc.value, pc.data);
       return;
     }
     const st = data[0] & 0xF0, ch = data[0] & 0x0F;
@@ -1726,11 +1852,13 @@
 
   // read everything on screen once connected
   function syncAll() {
-    const defs = [SEQTRAK.MASTER_VOLUME];
+    const defs = [SEQTRAK.MASTER_VOLUME, SEQTRAK.HP_VOLUME];
+    MIDIManager.send(SEQTRAK.buildRequest(SEQTRAK.HP_PLUG));
+    MIDIManager.send(SEQTRAK.buildRequest(SEQTRAK.CURRENT_PART));
     SEQTRAK.TRACKS.forEach((t, p) => defs.push(SEQTRAK.P.volume(p), SEQTRAK.P.pan(p)));
     requestDefs(defs.concat(defsIn(sndGrid), defsIn(document.getElementById('page-dx'))));
     MIDIManager.send(SEQTRAK.buildRequest([0x30, 0x40, 0x76]));
-    (async () => { await readTypes(); for (let p = 0; p < 11; p++) await fetchName(p); })();
+    (async () => { await readTypes(); for (let p = 0; p < 11; p++) { await readSoundNo(p); await fetchName(p); paintEdited(p); } if (launchVisible()) loadTrack(); })();
   }
 
   // ---- Init MIDI ----

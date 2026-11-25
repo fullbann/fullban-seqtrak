@@ -131,6 +131,8 @@ const M1Lib = (() => {
       vdf: { at: p[O1 + 15], al: s8(p[O1 + 16]), dt: p[O1 + 17], st: p[O1 + 19], sl: s8(p[O1 + 20]), rt: p[O1 + 21] },
       level: p[O1 + 23],
       vda: { at: p[O1 + 29], dt: p[O1 + 31], sl: p[O1 + 34], rt: p[O1 + 35] },
+      // effect block at byte 38 (as M-One reads it): types, FX1 L/R + FX2 L/R balance, switches in byte 8
+      fx: { type: [p[38], p[39]], bal: [Math.round((p[40] + p[41]) / 2), Math.round((p[42] + p[43]) / 2)], on: [!!(p[46] & 0x03), !!(p[46] & 0x0C)] },
     };
   }
   // M1 times run 0-99 (longer = bigger); the SEQTRAK's are offsets -64..+63 on the sound's own times.
@@ -156,5 +158,9 @@ const M1Lib = (() => {
     return out;
   }
 
-  return { importFiles, allBanks, clearAll, describe, paramsFor, parseBytes, progName };
+  const FX_NAMES = ['Hall', 'Ensemble Hall', 'Concert Hall', 'Room', 'Large Room', 'Live Stage', 'Early Ref 1', 'Early Ref 2', 'Early Ref 3',
+    'Stereo Delay', 'Cross Delay', 'Chorus 1', 'Chorus 2', 'Flanger 1', 'Cross Flanger', 'Stereo Phaser', 'Phaser', 'Stereo Tremolo', 'Tremolo',
+    'Equalizer', 'Overdrive', 'Distortion', 'Exciter', 'Symphonic Ens', 'Rotary Speaker', 'Delay/Hall', 'Delay/Room', 'Delay/Early Ref',
+    'Delay/Delay', 'Delay/Chorus', 'Delay/Flanger', 'Delay/Phaser', 'Delay/Tremolo', 'No Effect'];
+  return { importFiles, allBanks, clearAll, describe, paramsFor, parseBytes, progName, FX_NAMES };
 })();

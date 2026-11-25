@@ -88,8 +88,11 @@ const MIDIManager = (() => {
   // (same SysEx address, or same CC on the same channel) replaces the queued one.
   const sendQueue = [];
   let sending = false;
+  const isSeqAddr = ah => (ah >= 0x20 && ah <= 0x2F) || (ah >= 0x70 && ah <= 0x7F);
   function msgKey(d) {
-    if (d[0] === 0xF0 && d.length > 9) return 'sx' + d[2] + ':' + d[6] + ':' + d[7] + ':' + d[8];
+    // only single-value Parameter Changes may replace an older queued one. Sequencer edits (add/delete note: 2x, 7x)
+    // and requests share an address but are separate events - every one must go out.
+    if (d[0] === 0xF0 && d.length === 11 && (d[2] & 0xF0) === 0x10 && !isSeqAddr(d[6])) return 'sx' + d[2] + ':' + d[6] + ':' + d[7] + ':' + d[8];
     if ((d[0] & 0xF0) === 0xB0) return 'cc' + d[0] + ':' + d[1];
     return null;
   }
