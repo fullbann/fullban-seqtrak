@@ -735,7 +735,6 @@
   // ======================================================
   const m1LoadedName = document.getElementById('m1-loaded-name');
   let m1Target = 7, m1Loaded = null, m1PresetIdx = 0;
-  let m1Cat = 'ALL', m1RangeStart = 0;
 
   // Sub-tab navigation
   document.querySelectorAll('.m1-subtab').forEach(tab => {
@@ -794,62 +793,7 @@
   buildM1Knobs();
   document.querySelectorAll('.m1-target-btn').forEach(btn => btn.addEventListener('click', () => setTimeout(buildM1Knobs, 0)));
 
-  // ---- BROWSE sub-page ----
-  const m1Cats = document.getElementById('m1-categories');
-  const m1Grid = document.getElementById('m1-sound-grid');
-
-  // Category buttons
-  const catCounts = M1_SOUNDS.getCategoryCounts();
-  M1_SOUNDS.CATEGORIES.forEach(cat => {
-    if (!catCounts[cat]) return;
-    const btn = document.createElement('button');
-    btn.className = 'cat-btn'; btn.dataset.cat = cat;
-    btn.innerHTML = `${cat} <span class="cat-count">${catCounts[cat]}</span>`;
-    btn.addEventListener('click', () => {
-      m1Cats.querySelectorAll('.cat-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active'); m1Cat = cat; renderM1Grid();
-    });
-    m1Cats.appendChild(btn);
-  });
-
-  m1Cats.querySelector('[data-cat="ALL"]').addEventListener('click', () => {
-    m1Cats.querySelectorAll('.cat-btn').forEach(b => b.classList.remove('active'));
-    m1Cats.querySelector('[data-cat="ALL"]').classList.add('active');
-    m1Cat = 'ALL'; renderM1Grid();
-  });
-
-  // Range tabs (00-19, 20-39, etc.)
-  document.querySelectorAll('.m1-range').forEach(btn => {
-    btn.addEventListener('click', () => {
-      document.querySelectorAll('.m1-range').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      m1RangeStart = parseInt(btn.dataset.range);
-      renderM1Grid();
-    });
-  });
-
-  function renderM1Grid() {
-    let sounds = M1_SOUNDS.getByCategory(m1Cat);
-    // If filtering by range and showing ALL, slice to range
-    if (m1Cat === 'ALL') {
-      sounds = sounds.slice(m1RangeStart, m1RangeStart + 20);
-    }
-    m1Grid.innerHTML = '';
-    sounds.forEach(s => {
-      const cell = document.createElement('button');
-      cell.className = 'm1-grid-cell' + (m1Loaded === s.id ? ' loaded' : '');
-      cell.dataset.id = s.id;
-      cell.innerHTML = `<span class="m1-cell-num">${s.id}</span> ${s.name.replace('M1 ', '')}`;
-      cell.addEventListener('click', () => {
-        m1PresetIdx = s.id;
-        updatePresetDisplay();
-        loadM1(s);
-      });
-      m1Grid.appendChild(cell);
-    });
-  }
-
-  renderM1Grid();
+  // (BROWSE sub-page removed 25 Nov: the PLAY page's preset grid replaces it)
 
   // ---- FX sub-page: the SEQTRAK's own effects, as if the M1 were the internal synth ----
   // REVERB = send reverb + this track's reverb send, DELAY = send delay + delay send,
@@ -1012,8 +956,7 @@
 
   function loadM1(sound) {
     m1Loaded = sound.id;
-    m1Grid.querySelectorAll('.m1-grid-cell').forEach(c =>
-      c.classList.toggle('loaded', parseInt(c.dataset.id) === sound.id));
+    if (typeof renderPresetGrid === 'function') renderPresetGrid();
     const hit = userMap[norm(sound.name)];
     const tname = m1Target === 7 ? 'SYN 1' : 'SYN 2';
     if (!hit) {
