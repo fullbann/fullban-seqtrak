@@ -1,5 +1,5 @@
 /* ============================================
-   FULLBAN SEQ-TRAK — Main App v9
+   FULLBAN SEQ-TRAK — Main App v9d
    MAIN MIX (mixer + sound), LAUNCH + SEQ (clips, 64 pads, chords, piano roll), DX, FX, M-ONE
    ============================================ */
 
@@ -1865,10 +1865,11 @@
   async function refreshLib() {
     try { libBanks = await M1Lib.allBanks(); } catch (e) { libBanks = []; }
     // on the PC bridge the user's own bank file is served locally (/private/m1lib): load it once, no file picker
-    if (!libBanks.length && !libAutoTried && location.protocol === 'http:') {
+    const lb = MIDIManager.bridgeURL && MIDIManager.bridgeURL();
+    if (!libBanks.length && !libAutoTried && lb) {
       libAutoTried = true;
       try {
-        const r = await fetch(location.origin + '/private/m1lib', { cache: 'no-store' });
+        const r = await fetch(lb + '/private/m1lib', { cache: 'no-store' });
         if (r.ok) {
           libStatus.textContent = 'Installing your M1 banks...';
           await M1Lib.importFiles([new File([await r.arrayBuffer()], 'M1-Library.m1lib')]);
@@ -2062,6 +2063,7 @@
 
   // ---- Init MIDI ----
   const ok = await MIDIManager.init();
+  refreshLib();                                    // now the bridge is known: pick up the local M1 banks if the library is empty
   if (ok && MIDIManager.autoConnect()) {
     updateMidiStatus(true, MIDIManager.getConnectionName());
     setTimeout(syncAll, 800);

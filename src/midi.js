@@ -19,10 +19,13 @@ const MIDIManager = (() => {
   // Bridge candidates: the page's own server (when opened from a bridge), the XL, then a PC bridge
   // (an https page can't reach an http bridge, so standalone/hosted copies skip the bridge)
   const bridgeCandidates = [];
-  const noBridge = location.protocol === 'https:' || /[?&]direct\b/.test(location.search);
+  // The hosted (https) copy may still talk to a bridge on THIS computer: browsers allow an https page to
+  // reach http://127.0.0.1. So the GitHub page on the PC gets USB MIDI and the local M1 banks too.
+  // (The XL bridge is plain http on the LAN, which an https page can't reach.)
+  const noBridge = /[?&]direct\b/.test(location.search);
   if (!noBridge) {
-    if (location.protocol === 'http:') bridgeCandidates.push(location.origin);
-    bridgeCandidates.push('http://192.168.1.72:8788', 'http://127.0.0.1:8787');
+    if (location.protocol === 'http:') bridgeCandidates.push(location.origin, 'http://192.168.1.72:8788');
+    bridgeCandidates.push('http://127.0.0.1:8787');
   }
   let bridgeURL = bridgeCandidates[0];
   let bridgeStatus = null;
@@ -356,6 +359,7 @@ const MIDIManager = (() => {
     disconnect,
     isConnected,
     getConnectionName,
+    bridgeURL: () => (bridgeMode ? bridgeURL : null),
     send,
     sendCC,
     sendDxCommon,
