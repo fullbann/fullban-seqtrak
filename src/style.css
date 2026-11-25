@@ -1057,7 +1057,8 @@ button { touch-action: manipulation; }
 
 /* ===== v9: clips under the mixer, bigger sequencer, OXI-style modes, playhead + halo, library categories, M1 art ===== */
 .mix-left { flex-direction: column; gap: 6px; }
-.clip-grid { display: flex; flex-direction: column; gap: 3px; flex-shrink: 0; }
+.mix-strips { flex: 1 1 0; min-height: 0; }
+.clip-grid { display: flex; flex-direction: column; gap: 3px; flex: 1 1 0; min-height: 0; }
 .cg-row { display: flex; gap: 4px; }
 .cg-row > * { flex: 1 1 0; min-width: 0; }
 .cg-row .lr-clip { min-height: 25px; font-size: 10px; }
@@ -1099,6 +1100,6 @@ button { touch-action: manipulation; }
 .lib-cats { flex-shrink: 0; }
 /* M-One banner: clean drawing instead of the cut-out photo */
 .m1-hero-photo, .m1-edit-row .m1-hero-photo { background: url('m1-art.png') right 14px center / auto 80% no-repeat; opacity: 1; filter: drop-shadow(0 10px 16px rgba(0,0,0,.65));
-  -webkit-mask-image: none; mask-image: none; transform: perspective(700px) rotateX(26deg) rotateZ(-3deg); transform-origin: 75% 50%; }
+  -webkit-mask-image: none; mask-image: none; }
 .m1-hero::after { display: none; }
 @media (pointer: coarse) { .cg-row .lr-clip { min-height: 30px; } .pad64 .seq-step { min-height: 48px; } }
