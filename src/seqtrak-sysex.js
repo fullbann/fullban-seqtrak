@@ -152,6 +152,7 @@ const SEQTRAK = (() => {
     return new Uint8Array([0xF0, YAMAHA_ID, type, ...MODEL_ID, ...addr, ...(data || []), 0xF7]);
   }
   const buildParam = (addr, value) => frame(0x10, addr, [value & 0x7F]);
+  const buildParamData = (addr, data) => frame(0x10, addr, data.map(b => b & 0x7F));
   const buildRequest = (addr) => frame(0x30, addr);
   const buildCC = (ch, num, v) => new Uint8Array([0xB0 | (ch & 0x0F), num & 0x7F, v & 0x7F]);
 
@@ -168,12 +169,64 @@ const SEQTRAK = (() => {
 
   // Parse an incoming Parameter Change; returns { key, value } or null
   function parseParamChange(d) {
-    if (d.length < 11 || d[0] !== 0xF0 || d[1] !== 0x43 || (d[2] & 0xF0) !== 0x10) return null;
+    if (d.length < 10 || d[0] !== 0xF0 || d[1] !== 0x43 || (d[2] & 0xF0) !== 0x10) return null;
     if (d[3] !== 0x7F || d[4] !== 0x1C || d[5] !== 0x0C) return null;
     const addr = [d[6], d[7], d[8]];
     const data = Array.from(d.slice(9, d.length - 1));
     return { addr, data, key: 'sx:' + addr.map(b => b.toString(16).padStart(2, '0')).join(''), value: data[0] };
   }
+
+  // 7-into-8 unpacking (02-sysex-format: header bit 6-k belongs to byte k), then UTF-8 text
+  function unpack7(enc) {
+    const out = [];
+    for (let i = 0; i < enc.length; i += 8) {
+      const h = enc[i];
+      for (let k = 0; k < 7 && i + 1 + k < enc.length; k++) out.push(enc[i + 1 + k] | (((h >> (6 - k)) & 1) << 7));
+    }
+    return out;
+  }
+  function decodeName(data) {
+    const raw = unpack7(data);
+    let end = raw.indexOf(0); if (end < 0) end = raw.length;
+    try { return new TextDecoder().decode(new Uint8Array(raw.slice(0, end))).trim(); }
+    catch (e) { return String.fromCharCode(...raw.slice(0, end)).trim(); }
+  }
+  // 01 1p 35 CurrentSoundName (verified on hardware: answers for presets and user sounds)
+  const soundNameAddr = p => [0x01, 0x10 | p, 0x35];
+
+  // Bank select + program change triplet (06-sounds-presets): always send all three
+  const loadSound = (ch, msb, lsb, prog) => [buildCC(ch, 0, msb), buildCC(ch, 32, lsb), new Uint8Array([0xC0 | (ch & 0x0F), prog & 0x7F])];
+
+  // ---- Effects (03c + cc-map) ----
+  const FX = {
+    revType: { kind: 'sx', addr: [0x30, 0x41, 0x00], label: 'TYPE' },
+    revReturn: { kind: 'sx', addr: [0x30, 0x41, 0x44], label: 'RETURN', min: 0, max: 127, def: 0x2E, fmt: fmt.raw },
+    revPan: { kind: 'sx', addr: [0x30, 0x41, 0x45], label: 'PAN', min: 1, max: 127, def: 64, bipolar: true, fmt: fmt.pan },
+    revOn: { kind: 'sx', addr: [0x30, 0x41, 0x46], label: 'ON', min: 0, max: 1, def: 1 },
+    revP: [110, 111, 112].map((n, i) => cc(0, n, 'PARAM ' + (i + 1), { def: 64 })),
+    dlyType: { kind: 'sx', addr: [0x30, 0x42, 0x00], label: 'TYPE' },
+    dlyReturn: { kind: 'sx', addr: [0x30, 0x42, 0x44], label: 'RETURN', min: 0, max: 127, def: 0x60, fmt: fmt.raw },
+    dlyPan: { kind: 'sx', addr: [0x30, 0x42, 0x45], label: 'PAN', min: 1, max: 127, def: 64, bipolar: true, fmt: fmt.pan },
+    dlyToRev: { kind: 'sx', addr: [0x30, 0x42, 0x46], label: 'TO REVERB', min: 0, max: 127, def: 0, fmt: fmt.raw },
+    dlyOn: { kind: 'sx', addr: [0x30, 0x42, 0x47], label: 'ON', min: 0, max: 1, def: 1 },
+    dlyP: [113, 114, 115].map((n, i) => cc(0, n, 'PARAM ' + (i + 1), { def: 64 })),
+    // master effects: block 30 4n with n = 2 + effect (1-3)
+    mType: e => ({ kind: 'sx', addr: [0x30, 0x42 + e, 0x00], label: 'TYPE' }),
+    mOn:   e => ({ kind: 'sx', addr: [0x30, 0x42 + e, 0x47], label: 'ON', min: 0, max: 1, def: 1 }),
+    mP: e => (e === 1 ? [102, 103, 104] : e === 2 ? [105] : [106]).map((n, i) => cc(0, n, 'PARAM ' + (i + 1), { def: 64 })),
+    // single (track) effect, on the track channel
+    trackP: p => [107, 108, 109].map((n, i) => cc(p, n, 'PARAM ' + (i + 1), { def: 64 })),
+  };
+  const fxTypeName = (msb, lsb) => (typeof FX_TYPES !== 'undefined' && FX_TYPES[[msb, lsb].map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase()]) || ('TYPE ' + msb + '/' + lsb);
+
+  // ---- Step record (04-sequencer-editing, ah = 70; DRUM-type parts only) ----
+  const STEP = {
+    add: (p, step, note, vel, gate) => buildParamData([0x70, 0x00 | p, 0x00], [step, note & 0x7F, vel & 0x7F, (gate >> 7) & 0x7F, gate & 0x7F]),
+    del: (p, step) => buildParamData([0x70, 0x20 | p, 0x00], [step]),
+    readAddr: (p, step) => [0x70, 0x40 | p, step],
+  };
+  const PATTERN_SELECT = p => ({ kind: 'sx', addr: [0x30, 0x50 | p, 0x0F], min: 0, max: 5 });   // verified
+  const RECORDING = { kind: 'sx', addr: [0x01, 0x10, 0x21], min: 0, max: 1 };                  // verified: only takes while playing
 
   // legacy helpers kept for the M-One page
   function buildDxCommonMsg(_dev, key, v) { const d = DX_COMMON[key]; return d ? buildParam(d.addr, v) : null; }
@@ -181,7 +234,8 @@ const SEQTRAK = (() => {
 
   return {
     TRACKS, P, MASTER_VOLUME, DX_COMMON, DX_OP, LFO_WAVES, fmt,
-    buildParam, buildRequest, buildCC, messagesFor, keyOf, parseParamChange,
+    buildParam, buildParamData, buildRequest, unpack7, decodeName, soundNameAddr, loadSound,
+    FX, fxTypeName, STEP, PATTERN_SELECT, RECORDING, buildCC, messagesFor, keyOf, parseParamChange,
     buildDxCommonMsg, buildDxOpMsg,
   };
 })();

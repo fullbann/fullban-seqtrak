@@ -664,3 +664,29 @@ html, body {
 }
 .btn-ble { background: linear-gradient(180deg, #2d8cf0, #1a5a9e); border-color: #4aa3ff; color: #fff; font-weight: 800; }
 .btn-ble:disabled { opacity: .45; }
+
+/* ---- v4c: sound names, FX grid, SEQ steps, M1 learn ---- */
+.strip-snd { width: 100%; font-size: 8px; font-weight: 600; color: #8fa2b6; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-height: 11px; padding: 0 2px; }
+.strip.sel .strip-snd { color: #e8f2ff; }
+.snd-head-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.snd-head-sound { font-size: 15px; font-weight: 800; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+#page-fx { padding: 10px; }
+.fx-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 10px; align-content: start; }
+.fx-sec.wide { grid-column: 1 / -1; }
+.fx-body { display: flex; flex-direction: column; gap: 8px; }
+.fx-top { display: flex; align-items: center; gap: 8px; }
+.fx-type { flex: 1; padding: 7px 10px; border-radius: 6px; background: #070b10; border: 1px solid #1c2836; color: var(--kc); font-weight: 800; font-size: 13px; letter-spacing: 1px; text-shadow: 0 0 8px color-mix(in srgb, var(--kc) 50%, transparent); }
+.fx-top .knob-wrap { flex-direction: row; min-width: 0; }
+.fx-note { font-size: 10px; color: #6f8193; }
+.fx-track .track-chips { padding-bottom: 6px; }
+
+.seq-msg { font-size: 11px; color: #8fa2b6; padding: 2px 2px 8px; }
+.seq-step.unknown { opacity: .55; }
+.seq-grid.locked .seq-step { opacity: .25; pointer-events: none; }
+.seq-btn.on { background: #40c060; color: #fff; border-color: #6ce08a; }
+#seq-rec.on { background: #e04040; border-color: #ff6a6a; color: #fff; box-shadow: 0 0 12px #e0404088; }
+
+.m1-learn { display: flex; align-items: center; gap: 8px; margin-left: auto; margin-right: 12px; }
+.m1-learn-btn { background: linear-gradient(180deg, #40c8e0, #1f7d8f); border: 1px solid #7fe6f7; color: #001; font-weight: 900; letter-spacing: 1.5px; font-size: 10px; padding: 6px 12px; border-radius: 5px; cursor: pointer; }
+.m1-learn-status { font-size: 10px; color: #9fb0c2; max-width: 360px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

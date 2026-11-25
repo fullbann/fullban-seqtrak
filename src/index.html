@@ -75,27 +75,7 @@
 
     <!-- FX -->
     <section id="page-fx" class="page hidden">
-      <div class="fx-section">
-        <div class="track-chips" id="fx-track-chips"></div>
-        <div class="section-panel">
-          <div class="section-title" style="color:var(--fb-text)">
-            <span class="dot" style="background:var(--fb-text-dim)"></span>TRACK SENDS
-          </div>
-          <div id="fx-sends-knobs"></div>
-        </div>
-        <div class="section-panel">
-          <div class="section-title" style="color:var(--fb-cyan)">
-            <span class="dot" style="background:var(--fb-cyan)"></span>REVERB
-          </div>
-          <div id="fx-reverb-knobs"></div>
-        </div>
-        <div class="section-panel">
-          <div class="section-title" style="color:var(--fb-orange)">
-            <span class="dot" style="background:var(--fb-orange)"></span>DELAY
-          </div>
-          <div id="fx-delay-knobs"></div>
-        </div>
-      </div>
+      <div class="fx-grid" id="fx-grid"></div>
     </section>
 
     <!-- SEQ -->
@@ -119,6 +99,7 @@
           <button class="pattern-btn" data-pattern="5">6</button>
         </div>
         <div class="track-chips" id="seq-track-chips"></div>
+        <div class="seq-msg" id="seq-msg"></div>
         <div class="seq-grid-wrap">
           <div class="seq-step-numbers" id="seq-step-numbers"></div>
           <div class="seq-grid" id="seq-grid"></div>
@@ -138,6 +119,10 @@
           <div class="m1-logo">
             <span class="m1-logo-fb">FULLBAN</span>
             <span class="m1-logo-name">M-<span class="m1-accent">ONE</span></span>
+          </div>
+          <div class="m1-learn">
+            <button class="m1-learn-btn" id="m1-learn">LEARN</button>
+            <span class="m1-learn-status" id="m1-learn-status"></span>
           </div>
           <div class="m1-target">
             <span class="m1-target-label">TO:</span>
@@ -229,6 +214,7 @@
     </section>
   </div>
 
+  <script src="fx-types.js"></script>
   <script src="seqtrak-sysex.js"></script>
   <script src="m1-sounds.js"></script>
   <script src="knob.js"></script>

@@ -135,6 +135,7 @@
   // SYNC REGISTRY — every control registers under its parameter key so
   // values coming back from the SEQTRAK move the right knob/fader.
   // ======================================================
+  const soundNames = new Array(11).fill('');   // current sound name per part, read from the unit
   const REG = new Map();              // key -> Set of widgets
   function reg(def, w) {
     const keys = [SEQTRAK.keyOf(def)];
@@ -245,7 +246,7 @@
     s.className = 'strip' + (p === selTrack ? ' sel' : '');
     s.dataset.track = p;
     s.style.setProperty('--kc', tk.color);
-    s.innerHTML = `<button class="strip-name">${tk.name}</button>`;
+    s.innerHTML = `<button class="strip-name">${tk.name}</button><div class="strip-snd" title=""></div>`;
     const pan = pk(SEQTRAK.P.pan(p), tk.color, { size: 'sm', label: 'PAN' });
     s.appendChild(pan);
     const volDef = SEQTRAK.P.volume(p);
@@ -277,7 +278,7 @@
     const s = document.createElement('div');
     s.className = 'strip strip-master';
     s.style.setProperty('--kc', '#ffffff');
-    s.innerHTML = `<div class="strip-name">MASTER</div><div class="strip-spacer"></div>`;
+    s.innerHTML = `<div class="strip-name">MASTER</div><div class="strip-snd"></div><div class="strip-spacer"></div>`;
     const def = SEQTRAK.MASTER_VOLUME;
     const f = reg(def, Fader(def, '#cfe3ff', v => sendDef(def, v)));
     const ro = document.createElement('div'); ro.className = 'strip-val';
@@ -308,7 +309,7 @@
     const tk = SEQTRAK.TRACKS[p], c = tk.color, P = SEQTRAK.P;
     const groupName = { drum: 'DRUM', synth: 'AWM2 SYNTH', dx: 'DX · FM', sampler: 'SAMPLER' }[tk.group];
     sndHead.style.setProperty('--kc', c);
-    sndHead.innerHTML = `<div class="snd-head-name">${tk.name}</div><div class="snd-head-sub">TRACK ${p + 1} · CH ${p + 1} · ${groupName}</div>`;
+    sndHead.innerHTML = `<div class="snd-head-name">${tk.name}</div><div class="snd-head-info"><div class="snd-head-sound" id="snd-head-sound">${soundNames[p] || '—'}</div><div class="snd-head-sub">TRACK ${p + 1} · CH ${p + 1} · ${groupName}</div></div>`;
     if (tk.group === 'dx') {
       const go = document.createElement('button');
       go.className = 'snd-head-go'; go.textContent = 'OPEN DX EDITOR ▸';
@@ -493,63 +494,129 @@
   document.querySelector('.tab[data-page="dx"]').addEventListener('click', () => requestDefs(defsIn(document.getElementById('page-dx'))));
 
   // ======================================================
-  // FX PAGE
+  // REQUEST / REPLY + SOUND NAMES
   // ======================================================
-  const fxBody = document.getElementById('fx-body');
-  const fxTrackChips = document.getElementById('fx-track-chips');
-  let fxTrack = 0;
-
-  SEQTRAK.TRACKS.forEach((tk, i) => {
-    const chip = document.createElement('button');
-    chip.className = 'track-chip' + (i === 0 ? ' active' : '');
-    chip.textContent = tk.name; chip.style.borderColor = tk.color; chip.dataset.track = i;
-    if (i === 0) { chip.style.background = tk.color; chip.style.color = '#fff'; }
-    chip.addEventListener('click', () => {
-      fxTrackChips.querySelectorAll('.track-chip').forEach(c => { c.classList.remove('active'); c.style.background = ''; c.style.color = ''; });
-      chip.classList.add('active'); chip.style.background = tk.color; chip.style.color = '#fff';
-      fxTrack = i; buildFxSends(i);
+  const waiters = new Map();          // sx key -> [resolve]
+  function ask(addr, ms) {
+    const key = 'sx:' + addr.map(b => b.toString(16).padStart(2, '0')).join('');
+    return new Promise(res => {
+      const list = waiters.get(key) || [];
+      const done = d => { clearTimeout(t); res(d); };
+      const t = setTimeout(() => { const l = waiters.get(key) || []; const i = l.indexOf(done); if (i >= 0) l.splice(i, 1); res(null); }, ms || 700);
+      list.push(done); waiters.set(key, list);
+      MIDIManager.send(SEQTRAK.buildRequest(addr));
     });
-    fxTrackChips.appendChild(chip);
-  });
-
-  function buildFxSends(idx) {
-    const el = document.getElementById('fx-sends-knobs');
-    if (el) el.innerHTML = '';
-    const tk = SEQTRAK.TRACKS[idx];
-    const row = Knob.buildRow([
-      knobCC('REVERB', tk.ch, 91, 0, tk.color),
-      knobCC('DELAY', tk.ch, 94, 0, tk.color),
-    ], onKnobCC);
-    if (el) el.appendChild(row);
+  }
+  async function askRetry(addr, ms, tries) {
+    for (let i = 0; i < (tries || 2); i++) { const d = await ask(addr, ms); if (d) return d; }
+    return null;
+  }
+  async function fetchName(p) {
+    const d = await askRetry(SEQTRAK.soundNameAddr(p), 700, 2);
+    if (!d) return null;
+    return setSoundName(p, SEQTRAK.decodeName(d));
+  }
+  function setSoundName(p, name) {
+    soundNames[p] = name;
+    const s = stripsEl.querySelector(`.strip[data-track="${p}"] .strip-snd`);
+    if (s) { s.textContent = name; s.title = name; }
+    if (p === selTrack) showSoundName();
+    if (p === m1Target && typeof m1LoadedName !== 'undefined' && name) m1LoadedName.textContent = name;
+    return name;
+  }
+  function showSoundName() {
+    const el = document.getElementById('snd-head-sound');
+    if (el) el.textContent = soundNames[selTrack] || '—';
+  }
+  // the unit changed sound on part p: read the new name and the new sound's knobs
+  let pcTimers = {};
+  function onSoundChanged(p) {
+    clearTimeout(pcTimers[p]);
+    pcTimers[p] = setTimeout(() => {
+      fetchName(p);
+      if (p === selTrack) requestDefs(defsIn(sndGrid));
+      if (p === 9) requestDefs(defsIn(document.getElementById('page-dx')));
+    }, 180);
   }
 
-  // Master reverb knobs (UI-only until SysEx addresses mapped)
-  const revRow = Knob.buildRow([
-    { label: 'TIME', min: 0, max: 127, def: 64, color: 'var(--fb-cyan)' },
-    { label: 'DIFFUSE', min: 0, max: 127, def: 64, color: 'var(--fb-cyan)' },
-    { label: 'HI DAMP', min: 0, max: 127, def: 64, color: 'var(--fb-cyan)' },
-    { label: 'MIX', min: 0, max: 127, def: 40, color: 'var(--fb-cyan)' },
-  ], () => {});
+  // ======================================================
+  // FX PAGE — send reverb, send delay, master effects, track effect
+  // ======================================================
+  const fxGrid = document.getElementById('fx-grid');
+  const FXD = SEQTRAK.FX;
+  const typeLabels = new Map();       // sx key of a TYPE address -> element
+  function fxPanel(title, color, typeDef, onDef, knobs, note) {
+    const body = document.createElement('div');
+    body.className = 'fx-body';
+    const top = document.createElement('div');
+    top.className = 'fx-top';
+    if (typeDef) {
+      const t = document.createElement('div');
+      t.className = 'fx-type'; t.textContent = '—';
+      typeLabels.set(SEQTRAK.keyOf(typeDef), t);
+      top.appendChild(t);
+    }
+    if (onDef) {
+      const tg = Knob.toggle('ON', true, v => sendDef(onDef, v ? 1 : 0));
+      tg.setValue = v => tg.setOn(v); tg.opts = onDef; tg.classList.add('knob-wrap'); reg(onDef, tg);
+      top.appendChild(tg);
+    }
+    body.appendChild(top);
+    body.appendChild(krow(knobs, color));
+    if (note) { const n = document.createElement('div'); n.className = 'fx-note'; n.textContent = note; body.appendChild(n); }
+    return section(title, color, body, 'fx-sec');
+  }
+  const PARAM_NOTE = 'PARAM 1-3 are the effect\'s three FX knobs - what they do depends on the effect type.';
+  fxGrid.appendChild(fxPanel('SEND REVERB', '#40c8e0', FXD.revType, FXD.revOn, [...FXD.revP, FXD.revReturn, FXD.revPan], PARAM_NOTE));
+  fxGrid.appendChild(fxPanel('SEND DELAY', '#f08030', FXD.dlyType, FXD.dlyOn, [...FXD.dlyP, FXD.dlyReturn, FXD.dlyPan, FXD.dlyToRev]));
+  [1, 2, 3].forEach(e => fxGrid.appendChild(fxPanel('MASTER FX ' + e, ['#9060e0', '#e060c0', '#e0c040'][e - 1], FXD.mType(e), FXD.mOn(e), FXD.mP(e))));
 
-  const dlyRow = Knob.buildRow([
-    { label: 'TIME', min: 0, max: 127, def: 64, color: 'var(--fb-orange)' },
-    { label: 'FBACK', min: 0, max: 127, def: 48, color: 'var(--fb-orange)' },
-    { label: 'HI DAMP', min: 0, max: 127, def: 64, color: 'var(--fb-orange)' },
-    { label: 'MIX', min: 0, max: 127, def: 32, color: 'var(--fb-orange)' },
-  ], () => {});
-
-  document.getElementById('fx-reverb-knobs').appendChild(revRow);
-  document.getElementById('fx-delay-knobs').appendChild(dlyRow);
-  buildFxSends(0);
+  // track effect + sends, for the track picked in the chips
+  const fxTrackWrap = document.createElement('div');
+  fxTrackWrap.className = 'fx-track';
+  const fxChips = document.createElement('div');
+  fxChips.className = 'track-chips';
+  const fxTrackBody = document.createElement('div');
+  let fxTrack = 7;
+  function buildFxTrack() {
+    unreg(fxTrackBody); fxTrackBody.innerHTML = '';
+    const tk = SEQTRAK.TRACKS[fxTrack];
+    fxTrackBody.appendChild(krow([...FXD.trackP(fxTrack), SEQTRAK.P.reverb(fxTrack), SEQTRAK.P.delay(fxTrack)], tk.color));
+    fxChips.querySelectorAll('.track-chip').forEach((c, i) => {
+      const on = i === fxTrack;
+      c.classList.toggle('active', on); c.style.background = on ? SEQTRAK.TRACKS[i].color : ''; c.style.color = on ? '#fff' : '';
+    });
+  }
+  SEQTRAK.TRACKS.forEach((tk, i) => {
+    const c = document.createElement('button');
+    c.className = 'track-chip'; c.textContent = tk.name; c.style.borderColor = tk.color;
+    c.onclick = () => { fxTrack = i; buildFxTrack(); };
+    fxChips.appendChild(c);
+  });
+  fxTrackWrap.append(fxChips, fxTrackBody);
+  fxGrid.appendChild(section('TRACK FX + SENDS', '#2d8cf0', fxTrackWrap, 'fx-sec wide'));
+  buildFxTrack();
+  async function readFxTypes() {
+    for (const [key, el] of typeLabels) {
+      const addr = [0, 1, 2].map(i => parseInt(key.slice(3 + i * 2, 5 + i * 2), 16));
+      const d = await askRetry(addr, 600, 2);
+      if (d && d.length >= 2) el.textContent = SEQTRAK.fxTypeName(d[0], d[1]);
+    }
+  }
+  document.querySelector('.tab[data-page="fx"]').addEventListener('click', () => {
+    requestDefs(defsIn(document.getElementById('page-fx')));
+    readFxTypes();
+  });
 
   // ======================================================
-  // SEQ PAGE
+  // SEQ PAGE — transport, pattern select, drum step editing on the unit
   // ======================================================
   const seqGrid = document.getElementById('seq-grid');
   const seqNums = document.getElementById('seq-step-numbers');
   const seqTrackChips = document.getElementById('seq-track-chips');
-  let seqTrack = 0, seqLen = 16;
-  const seqSteps = Array.from({ length: 11 }, () => new Array(32).fill(false));
+  const seqMsg = document.getElementById('seq-msg');
+  let seqTrack = 0, seqLen = 16, playing = false, recOn = false;
+  const steps = Array.from({ length: 11 }, () => new Array(32).fill(null));   // null = unknown, false = empty, obj = note
 
   SEQTRAK.TRACKS.forEach((tk, i) => {
     const chip = document.createElement('button');
@@ -559,33 +626,64 @@
     chip.addEventListener('click', () => {
       seqTrackChips.querySelectorAll('.track-chip').forEach(c => { c.classList.remove('active'); c.style.background = ''; c.style.color = ''; });
       chip.classList.add('active'); chip.style.background = tk.color; chip.style.color = '#fff';
-      seqTrack = i; renderSeq();
+      seqTrack = i; renderSeq(); readSteps();
     });
     seqTrackChips.appendChild(chip);
   });
 
+  const isDrumPart = p => SEQTRAK.TRACKS[p].group === 'drum';
   function renderSeq() {
     seqGrid.innerHTML = ''; seqNums.innerHTML = '';
-    const cols = seqLen;
-    seqGrid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
-    seqNums.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+    seqGrid.style.gridTemplateColumns = `repeat(${seqLen}, 1fr)`;
+    seqNums.style.gridTemplateColumns = `repeat(${seqLen}, 1fr)`;
     const tk = SEQTRAK.TRACKS[seqTrack];
-    for (let s = 0; s < cols; s++) {
+    const drum = isDrumPart(seqTrack);
+    seqMsg.textContent = drum
+      ? 'Tap a step to add/remove it on the SEQTRAK. Best done while stopped.'
+      : 'Step editing for SYNTH / DX / SAMPLER tracks uses the piano-roll protocol - coming next. Drum tracks work now.';
+    seqGrid.classList.toggle('locked', !drum);
+    for (let s = 0; s < seqLen; s++) {
       const num = document.createElement('span');
       num.className = 'seq-step-num'; num.textContent = s + 1;
       seqNums.appendChild(num);
-
       const btn = document.createElement('button');
-      btn.className = 'seq-step' + (seqSteps[seqTrack][s] ? ' on' : '');
+      const st = steps[seqTrack][s];
+      btn.className = 'seq-step' + (st ? ' on' : '') + (st === null ? ' unknown' : '');
       if (s % 4 === 0) btn.classList.add('beat-start');
       btn.dataset.step = s;
       btn.style.setProperty('--tk-color', tk.color);
-      btn.addEventListener('click', () => {
-        seqSteps[seqTrack][s] = !seqSteps[seqTrack][s];
-        btn.classList.toggle('on');
-      });
+      btn.addEventListener('click', () => toggleStep(s));
       seqGrid.appendChild(btn);
     }
+  }
+  function paintStep(p, s) {
+    if (p !== seqTrack) return;
+    const b = seqGrid.querySelector(`.seq-step[data-step="${s}"]`);
+    if (!b) return;
+    const st = steps[p][s];
+    b.classList.toggle('on', !!st); b.classList.toggle('unknown', st === null);
+  }
+  async function readStep(p, s) {
+    const d = await askRetry(SEQTRAK.STEP.readAddr(p, s), 450, 2);
+    if (d === null) return;                       // no reply: leave as unknown
+    steps[p][s] = d.length >= 6 ? { note: d[0], vel: d[1], gate: (d[4] << 7) | d[5] } : false;
+    paintStep(p, s);
+  }
+  let readToken = 0;
+  async function readSteps() {
+    if (!isDrumPart(seqTrack) || !MIDIManager.isConnected()) return;
+    const tok = ++readToken, p = seqTrack;
+    for (let s = 0; s < seqLen; s++) { if (tok !== readToken) return; await readStep(p, s); }
+  }
+  async function toggleStep(s) {
+    const p = seqTrack;
+    if (!isDrumPart(p)) return;
+    const st = steps[p][s];
+    if (st) MIDIManager.send(SEQTRAK.STEP.del(p, s));
+    else MIDIManager.send(SEQTRAK.STEP.add(p, s, 60, 100, 120));     // app defaults: C3, vel 100, gate 120 = one 16th
+    steps[p][s] = st ? false : { note: 60, vel: 100, gate: 120 };
+    paintStep(p, s);
+    setTimeout(() => readStep(p, s), 250);                           // confirm from the unit
   }
   renderSeq();
 
@@ -593,20 +691,38 @@
     btn.addEventListener('click', () => {
       document.querySelectorAll('.pattern-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
+      const pat = parseInt(btn.dataset.pattern);
+      SEQTRAK.TRACKS.forEach((t, p) => sendDef(SEQTRAK.PATTERN_SELECT(p), pat));      // verified 30 5p 0F
+      steps.forEach(a => a.fill(null)); renderSeq(); setTimeout(readSteps, 300);
     });
   });
-
   document.querySelectorAll('.len-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       document.querySelectorAll('.len-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       seqLen = parseInt(btn.dataset.len);
-      renderSeq();
+      renderSeq(); readSteps();
     });
   });
-
-  document.getElementById('seq-play').addEventListener('click', () => MIDIManager.send(new Uint8Array([0xFA])));
-  document.getElementById('seq-stop').addEventListener('click', () => MIDIManager.send(new Uint8Array([0xFC])));
+  const recBtn = document.getElementById('seq-rec');
+  function setPlaying(v) {
+    playing = v;
+    document.getElementById('seq-play').classList.toggle('on', v);
+    if (!v && recOn) { recOn = false; recBtn.classList.remove('on'); }
+  }
+  document.getElementById('seq-play').addEventListener('click', () => { MIDIManager.send(new Uint8Array([0xFA])); setPlaying(true); });
+  document.getElementById('seq-stop').addEventListener('click', () => { MIDIManager.send(new Uint8Array([0xFC])); setPlaying(false); });
+  recBtn.addEventListener('click', () => {
+    if (!playing) { seqMsg.textContent = 'REC only works while playing - press play first (the SEQTRAK ignores it when stopped).'; return; }
+    recOn = !recOn;
+    recBtn.classList.toggle('on', recOn);
+    sendDef(SEQTRAK.RECORDING, recOn ? 1 : 0);                                      // verified 01 10 21 (writable while playing)
+  });
+  document.getElementById('seq-bpm-input').addEventListener('change', e => {
+    const bpm = Math.max(5, Math.min(300, parseInt(e.target.value) || 120));
+    MIDIManager.send(SEQTRAK.buildParamData([0x30, 0x40, 0x76], [(bpm >> 7) & 0x7F, bpm & 0x7F]));   // 02-sysex-format example
+  });
+  document.querySelector('.tab[data-page="seq"]').addEventListener('click', () => { readSteps(); MIDIManager.send(SEQTRAK.buildRequest([0x30, 0x40, 0x76])); });
 
   // ======================================================
   // M-ONE PAGE — matches M-One VST plugin layout
@@ -766,20 +882,70 @@
   });
 
   // ---- Load sound ----
+  // M1 sounds are USER sounds. Their slot in the user bank (MSB 63, LSB 32+, program) is
+  // the order they were created in, so LEARN steps through the user bank once on the
+  // target track and reads each loaded name back (01 1p 35) - the method verified in
+  // seqtrak-docs 06. The map is kept in this browser.
+  const USERMAP_KEY = 'fbSeqtrakUserBank';
+  let userMap = {};
+  try { userMap = JSON.parse(localStorage.getItem(USERMAP_KEY) || '{}'); } catch (e) { userMap = {}; }
+  const norm = n => String(n || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  const learnBtn = document.getElementById('m1-learn');
+  const learnStatus = document.getElementById('m1-learn-status');
+  function learnLabel() {
+    const n = Object.keys(userMap).length;
+    const m1 = M1_SOUNDS.SOUNDS ? M1_SOUNDS.SOUNDS.filter(s => userMap[norm(s.name)]).length : 0;
+    learnStatus.textContent = n ? `${m1}/100 M1 sounds mapped (${n} user sounds)` : 'Tap LEARN once so the app can find your M1 sounds';
+  }
+  learnLabel();
+
+  let learning = false;
+  learnBtn.addEventListener('click', async () => {
+    if (learning) { learning = false; return; }
+    if (!MIDIManager.isConnected()) { learnStatus.textContent = 'Connect to the SEQTRAK first'; return; }
+    learning = true; learnBtn.textContent = 'STOP';
+    const p = m1Target, found = {};
+    let prev = null, total = 0;
+    for (let lsb = 32; lsb < 48 && learning; lsb++) {
+      let newHere = 0, sinceNew = 0;
+      for (let prog = 0; prog < 128 && learning; prog++) {
+        SEQTRAK.loadSound(p, 63, lsb, prog).forEach(m => MIDIManager.send(m));
+        await new Promise(r => setTimeout(r, 140));
+        const d = await askRetry(SEQTRAK.soundNameAddr(p), 600, 2);
+        const name = d ? SEQTRAK.decodeName(d) : null;
+        if (name && name !== prev) {
+          if (!found[norm(name)]) found[norm(name)] = [lsb, prog, name];
+          prev = name; newHere++; total++; sinceNew = 0;
+        } else sinceNew++;
+        learnStatus.textContent = `Learning... bank ${lsb - 31}, slot ${prog + 1} - ${total} sounds found (last: ${prev || '-'})`;
+        if (sinceNew >= 24 && newHere > 0) break;      // past the end of this bank's sounds
+        if (sinceNew >= 24 && newHere === 0) break;    // empty bank
+      }
+      if (newHere === 0) break;
+    }
+    if (Object.keys(found).length) {
+      userMap = found;
+      try { localStorage.setItem(USERMAP_KEY, JSON.stringify(userMap)); } catch (e) {}
+    }
+    learning = false; learnBtn.textContent = 'LEARN';
+    learnLabel();
+    const piano = userMap[norm('M1 Piano')];
+    if (piano) SEQTRAK.loadSound(p, 63, piano[0], piano[1]).forEach(m => MIDIManager.send(m));
+  });
+
   function loadM1(sound) {
     m1Loaded = sound.id;
-    m1LoadedName.textContent = `${sound.name} → ${m1Target === 7 ? 'SYN 1' : 'SYN 2'}`;
-
-    // Update grid highlights
     m1Grid.querySelectorAll('.m1-grid-cell').forEach(c =>
       c.classList.toggle('loaded', parseInt(c.dataset.id) === sound.id));
-
-    // Send program change
-    const prog = sound.content - M1_SOUNDS.CONTENT_BASE;
-    sendCC(m1Target, 0x00, 63);
-    sendCC(m1Target, 0x20, 0);
-    MIDIManager.send(new Uint8Array([0xC0 | m1Target, prog & 0x7F]));
-
+    const hit = userMap[norm(sound.name)];
+    const tname = m1Target === 7 ? 'SYN 1' : 'SYN 2';
+    if (!hit) {
+      m1LoadedName.textContent = `${sound.name} not mapped yet - tap LEARN`;
+      return;
+    }
+    SEQTRAK.loadSound(m1Target, 63, hit[0], hit[1]).forEach(m => MIDIManager.send(m));
+    m1LoadedName.textContent = `${sound.name} → ${tname}`;
+    onSoundChanged(m1Target);                     // read the name back to confirm
     const el = document.getElementById('m1-loaded');
     el.classList.add('flash');
     setTimeout(() => el.classList.remove('flash'), 600);
@@ -796,11 +962,24 @@
         const bi = document.getElementById('seq-bpm-input'); if (bi) bi.value = bpm;
         return;
       }
-      applyIncoming(pc.key, pc.value);
+      const w = waiters.get(pc.key);
+      if (w && w.length) { w.shift()(pc.data); }
+      else if (pc.addr[0] === 0x01 && (pc.addr[1] & 0xF0) === 0x10 && pc.addr[2] === 0x35) setSoundName(pc.addr[1] & 0x0F, SEQTRAK.decodeName(pc.data));
+      else if (pc.addr[0] === 0x70 && (pc.addr[1] & 0xF0) === 0x40) {
+        const p = pc.addr[1] & 0x0F, st = pc.addr[2], d = pc.data;
+        if (p < 11 && st < 32) { steps[p][st] = d.length >= 6 ? { note: d[0], vel: d[1], gate: (d[4] << 7) | d[5] } : false; paintStep(p, st); }
+      }
+      if (pc.addr[0] === 0x30 && pc.addr[2] === 0x00 && pc.addr[1] >= 0x41 && pc.addr[1] <= 0x45 && pc.data.length >= 2) {
+        const el = typeLabels.get(pc.key); if (el) el.textContent = SEQTRAK.fxTypeName(pc.data[0], pc.data[1]);
+      }
+      if (pc.data.length) applyIncoming(pc.key, pc.value);
       return;
     }
     const st = data[0] & 0xF0, ch = data[0] & 0x0F;
     if (st === 0xB0) applyIncoming(`cc:${ch}:${data[1]}`, data[2]);
+    else if (st === 0xC0 && ch < 11) onSoundChanged(ch);                 // unit changed sound: follow it
+    else if (data[0] === 0xFA || data[0] === 0xFB) setPlaying(true);
+    else if (data[0] === 0xFC) setPlaying(false);
   };
 
   // read everything on screen once connected
@@ -809,6 +988,7 @@
     SEQTRAK.TRACKS.forEach((t, p) => defs.push(SEQTRAK.P.volume(p), SEQTRAK.P.pan(p)));
     requestDefs(defs.concat(defsIn(sndGrid), defsIn(document.getElementById('page-dx'))));
     MIDIManager.send(SEQTRAK.buildRequest([0x30, 0x40, 0x76]));
+    (async () => { for (let p = 0; p < 11; p++) await fetchName(p); })();
   }
 
   // ---- Init MIDI ----
