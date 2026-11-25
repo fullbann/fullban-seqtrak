@@ -1696,9 +1696,21 @@
   // ---- LIBRARY: M1 programs applied live to the target track ----
   const libBanksEl = document.getElementById('lib-banks'), libProgsEl = document.getElementById('lib-progs');
   const libStatus = document.getElementById('lib-status'), libInfo = document.getElementById('lib-info');
-  let libBanks = [], libSel = 0, libQuery = '', libLoadedKey = '';
+  let libBanks = [], libSel = 0, libQuery = '', libLoadedKey = '', libAutoTried = false;
   async function refreshLib() {
     try { libBanks = await M1Lib.allBanks(); } catch (e) { libBanks = []; }
+    // on the PC bridge the user's own bank file is served locally (/private/m1lib): load it once, no file picker
+    if (!libBanks.length && !libAutoTried && location.protocol === 'http:') {
+      libAutoTried = true;
+      try {
+        const r = await fetch(location.origin + '/private/m1lib', { cache: 'no-store' });
+        if (r.ok) {
+          libStatus.textContent = 'Installing your M1 banks...';
+          await M1Lib.importFiles([new File([await r.arrayBuffer()], 'M1-Library.m1lib')]);
+          libBanks = await M1Lib.allBanks();
+        }
+      } catch (e) {}
+    }
     const nprog = libBanks.reduce((s, b) => s + b.progs.length, 0);
     libStatus.textContent = libBanks.length ? `${libBanks.length} banks · ${nprog.toLocaleString()} programs on this device` : 'No banks yet - tap IMPORT BANKS and pick your .syx / .m1b / .m1lib files';
     renderLib();
