@@ -544,7 +544,13 @@
   // ======================================================
   const fxGrid = document.getElementById('fx-grid');
   const FXD = SEQTRAK.FX;
-  const typeLabels = new Map();       // sx key of a TYPE address -> element
+  const typeLabels = new Map();       // sx key of a TYPE address -> Set of elements
+  function addTypeLabel(def, el) {
+    const k = SEQTRAK.keyOf(def);
+    if (!typeLabels.has(k)) typeLabels.set(k, new Set());
+    typeLabels.get(k).add(el);
+  }
+  function setTypeName(key, name) { const set = typeLabels.get(key); if (set) set.forEach(el => { if (document.body.contains(el)) el.textContent = name; }); }
   function fxPanel(title, color, typeDef, onDef, knobs, note) {
     const body = document.createElement('div');
     body.className = 'fx-body';
@@ -553,7 +559,7 @@
     if (typeDef) {
       const t = document.createElement('div');
       t.className = 'fx-type'; t.textContent = '—';
-      typeLabels.set(SEQTRAK.keyOf(typeDef), t);
+      addTypeLabel(typeDef, t);
       top.appendChild(t);
     }
     if (onDef) {
@@ -597,10 +603,10 @@
   fxGrid.appendChild(section('TRACK FX + SENDS', '#2d8cf0', fxTrackWrap, 'fx-sec wide'));
   buildFxTrack();
   async function readFxTypes() {
-    for (const [key, el] of typeLabels) {
+    for (const key of typeLabels.keys()) {
       const addr = [0, 1, 2].map(i => parseInt(key.slice(3 + i * 2, 5 + i * 2), 16));
       const d = await askRetry(addr, 600, 2);
-      if (d && d.length >= 2) el.textContent = SEQTRAK.fxTypeName(d[0], d[1]);
+      if (d && d.length >= 2) setTypeName(key, SEQTRAK.fxTypeName(d[0], d[1]));
     }
   }
   document.querySelector('.tab[data-page="fx"]').addEventListener('click', () => {
@@ -845,41 +851,112 @@
 
   renderM1Grid();
 
-  // ---- FX sub-page ----
-  // Effect 1 knobs
-  const fx1Knobs = Knob.buildRow([
-    { label: 'TIME',     min: 0, max: 127, def: 64, color: 'var(--fb-cyan)' },
-    { label: 'PRE-DLY',  min: 0, max: 127, def: 20, color: 'var(--fb-cyan)' },
-    { label: 'HI DAMP',  min: 0, max: 127, def: 64, color: 'var(--fb-cyan)' },
-    { label: 'MIX L',    min: 0, max: 127, def: 40, color: 'var(--fb-cyan)' },
-    { label: 'MIX R',    min: 0, max: 127, def: 40, color: 'var(--fb-cyan)' },
-    { label: 'EQ HIGH',  min: 0, max: 127, def: 64, color: 'var(--fb-cyan)' },
-    { label: 'EQ LOW',   min: 0, max: 127, def: 64, color: 'var(--fb-cyan)' },
-  ], () => {});
-  document.getElementById('m1-fx1-knobs').appendChild(fx1Knobs);
-
-  // Effect 2 knobs
-  const fx2Knobs = Knob.buildRow([
-    { label: 'DEPTH',   min: 0, max: 127, def: 0,  color: 'var(--fb-orange)' },
-    { label: 'SPEED',   min: 0, max: 127, def: 13, color: 'var(--fb-orange)' },
-    { label: 'WAVE',    min: 0, max: 127, def: 0,  color: 'var(--fb-orange)' },
-    { label: 'DELAY',   min: 0, max: 127, def: 0,  color: 'var(--fb-orange)' },
-    { label: 'MIX L',   min: 0, max: 127, def: 50, color: 'var(--fb-orange)' },
-    { label: 'MIX R',   min: 0, max: 127, def: 50, color: 'var(--fb-orange)' },
-    { label: 'EQ HIGH', min: 0, max: 127, def: 64, color: 'var(--fb-orange)' },
-    { label: 'EQ LOW',  min: 0, max: 127, def: 64, color: 'var(--fb-orange)' },
-  ], () => {});
-  document.getElementById('m1-fx2-knobs').appendChild(fx2Knobs);
-
-  // FX category tab clicks
-  document.querySelectorAll('.m1-fx-cats').forEach(cats => {
-    cats.querySelectorAll('.m1-fxcat').forEach(btn => {
+  // ---- FX sub-page: the SEQTRAK's own effects, as if the M1 were the internal synth ----
+  // REVERB = send reverb + this track's reverb send, DELAY = send delay + delay send,
+  // MOD = the track's insert (single) effect, EQ = the track's EQ. All documented addresses.
+  const M1FX_COLORS = ['var(--fb-cyan)', 'var(--fb-orange)'];
+  const m1FxCat = [0, 1];                      // panel 1 = REVERB, panel 2 = DELAY
+  function m1FxContent(cat, p) {
+    const F = SEQTRAK.FX, P = SEQTRAK.P;
+    if (cat === 0) return { type: F.revType, on: F.revOn, knobs: [...F.revP, F.revReturn, Object.assign(P.reverb(p), { label: 'SEND' })] };
+    if (cat === 1) return { type: F.dlyType, on: F.dlyOn, knobs: [...F.dlyP, F.dlyReturn, Object.assign(P.delay(p), { label: 'SEND' }), F.dlyToRev] };
+    if (cat === 2) return { note: 'Track insert effect - its three FX knobs', knobs: F.trackP(p) };
+    return { note: 'Track EQ', knobs: [P.eqLow(p), P.eqHigh(p)] };
+  }
+  function buildM1Fx(panel) {
+    const n = panel + 1;
+    const host = document.getElementById(`m1-fx${n}-knobs`);
+    const tgl = document.getElementById(`m1-fx${n}-toggle`);
+    unreg(host); host.innerHTML = '';
+    const c = m1FxContent(m1FxCat[panel], m1Target);
+    const top = document.createElement('div');
+    top.className = 'm1-fx-type';
+    if (c.type) { top.textContent = '—'; addTypeLabel(c.type, top); }
+    else top.textContent = c.note;
+    host.appendChild(top);
+    host.appendChild(krow(c.knobs, M1FX_COLORS[panel]));
+    // ON switch follows the effect's own on/off where it has one
+    tgl.style.visibility = c.on ? 'visible' : 'hidden';
+    tgl.onclick = null;
+    if (c.on) {
+      tgl.opts = c.on;
+      tgl.setValue = v => tgl.classList.toggle('on', !!v);
+      tgl.onclick = () => { tgl.classList.toggle('on'); sendDef(c.on, tgl.classList.contains('on') ? 1 : 0); };
+      reg(c.on, tgl);
+    }
+    if (c.type) {
+      requestDefs([c.on]);
+      askRetry(c.type.addr, 600, 2).then(d => { if (d && d.length >= 2) setTypeName(SEQTRAK.keyOf(c.type), SEQTRAK.fxTypeName(d[0], d[1])); });
+    }
+    requestDefs(c.knobs);
+  }
+  [0, 1].forEach(panel => {
+    const cats = document.getElementById(`m1-fx${panel + 1}-cats`);
+    cats.querySelectorAll('.m1-fxcat').forEach((btn, i) => {
+      btn.classList.toggle('active', i === m1FxCat[panel]);
       btn.addEventListener('click', () => {
         cats.querySelectorAll('.m1-fxcat').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
+        m1FxCat[panel] = i; buildM1Fx(panel);
       });
     });
+    buildM1Fx(panel);
   });
+  document.querySelector('.m1-subtab[data-m1page="fx"]').addEventListener('click', () => { buildM1Fx(0); buildM1Fx(1); });
+  document.querySelectorAll('.m1-target-btn').forEach(btn => btn.addEventListener('click', () => setTimeout(() => { buildM1Fx(0); buildM1Fx(1); }, 0)));
+
+  // ---- PLAY page preset grid (M-One plugin style) ----
+  const CAT_COL = { Piano: '#2d8cf0', Keyboard: '#40c8e0', Organ: '#e0a020', Bass: '#e04050', Guitar: '#e07030', Pad: '#9060e0',
+    Strings: '#c040a0', Brass: '#e0c040', Woodwind: '#40c060', World: '#30b0a0', Mallet: '#80c040', Bell: '#a0d8ff', Rhythmic: '#f08030', SFX: '#8c9bb0', Lead: '#ff6aa0' };
+  const pCats = document.getElementById('m1-pcats');
+  const pGrid = document.getElementById('m1-pgrid');
+  let pCat = 'ALL', pPage = 0;
+  const PER_PAGE = 24;
+  function buildPresetCats() {
+    pCats.innerHTML = '';
+    const counts = M1_SOUNDS.getCategoryCounts();
+    ['ALL', ...M1_SOUNDS.CATEGORIES.filter(c => counts[c])].forEach(cat => {
+      const b = document.createElement('button');
+      b.className = 'm1-pcat' + (cat === pCat ? ' on' : '');
+      b.style.setProperty('--cc', CAT_COL[cat] || '#2d8cf0');
+      b.innerHTML = `${cat.toUpperCase()}<span>${cat === 'ALL' ? 100 : counts[cat]}</span>`;
+      b.onclick = () => { pCat = cat; pPage = 0; buildPresetCats(); renderPresetGrid(); };
+      pCats.appendChild(b);
+    });
+  }
+  function renderPresetGrid() {
+    const list = M1_SOUNDS.getByCategory(pCat);
+    const pages = Math.max(1, Math.ceil(list.length / PER_PAGE));
+    pPage = Math.min(pPage, pages - 1);
+    pGrid.innerHTML = '';
+    list.slice(pPage * PER_PAGE, pPage * PER_PAGE + PER_PAGE).forEach(s => {
+      const t = document.createElement('button');
+      t.className = 'm1-ptile' + (s.id === m1PresetIdx ? ' sel' : '') + (s.id === m1Loaded ? ' loaded' : '');
+      t.style.setProperty('--cc', CAT_COL[s.cat] || '#2d8cf0');
+      t.innerHTML = `<span class="m1-ptile-num">${String(s.id).padStart(2, '0')}</span><span class="m1-ptile-name">${s.name.replace(/^M1 /, '')}</span><span class="m1-ptile-cat">${s.cat}</span>`;
+      t.onclick = () => { m1PresetIdx = s.id; updatePresetDisplay(); loadM1(s); renderPresetGrid(); };
+      pGrid.appendChild(t);
+    });
+    const nav = document.getElementById('m1-ppages');
+    nav.innerHTML = '';
+    for (let i = 0; i < pages && pages > 1; i++) {
+      const b = document.createElement('button');
+      b.className = 'm1-ppage' + (i === pPage ? ' on' : '');
+      b.textContent = `${i * PER_PAGE + 1}-${Math.min(list.length, (i + 1) * PER_PAGE)}`;
+      b.onclick = () => { pPage = i; renderPresetGrid(); };
+      nav.appendChild(b);
+    }
+  }
+  buildPresetCats();
+  renderPresetGrid();
+  // keep the grid in step with the arrows
+  ['m1-prev', 'm1-next'].forEach(id => document.getElementById(id).addEventListener('click', () => {
+    const s = M1_SOUNDS.getById(m1PresetIdx);
+    if (s && pCat !== 'ALL' && s.cat !== pCat) { pCat = 'ALL'; buildPresetCats(); }
+    const list = M1_SOUNDS.getByCategory(pCat);
+    pPage = Math.floor(list.findIndex(x => x.id === m1PresetIdx) / PER_PAGE) || 0;
+    renderPresetGrid();
+  }));
 
   // ---- Load sound ----
   // M1 sounds are USER sounds. Their slot in the user bank (MSB 63, LSB 32+, program) is
@@ -970,7 +1047,7 @@
         if (p < 11 && st < 32) { steps[p][st] = d.length >= 6 ? { note: d[0], vel: d[1], gate: (d[4] << 7) | d[5] } : false; paintStep(p, st); }
       }
       if (pc.addr[0] === 0x30 && pc.addr[2] === 0x00 && pc.addr[1] >= 0x41 && pc.addr[1] <= 0x45 && pc.data.length >= 2) {
-        const el = typeLabels.get(pc.key); if (el) el.textContent = SEQTRAK.fxTypeName(pc.data[0], pc.data[1]);
+        setTypeName(pc.key, SEQTRAK.fxTypeName(pc.data[0], pc.data[1]));
       }
       if (pc.data.length) applyIncoming(pc.key, pc.value);
       return;
