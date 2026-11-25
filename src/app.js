@@ -898,7 +898,7 @@
     const tok = ++readToken, p = seqTrack;
     if (isDrumPart(p)) {
       renderSeq();
-      for (let s = 0; s < Math.min(seqLen, 64); s++) { if (tok !== readToken) return; await readStep(p, s); }
+      for (let s = 0; s < Math.min(seqLen, 128); s++) { if (tok !== readToken) return; await readStep(p, s); }
     } else {
       setBusy(true, 'Reading the pattern from the SEQTRAK...');
       const ok = await readRoll(p);
@@ -956,7 +956,7 @@
   function makePads(onTap) {
     const p = seqTrack, tk = SEQTRAK.TRACKS[p];
     const grid = document.createElement('div'); grid.className = 'pad64';
-    for (let s = 0; s < 64; s++) {
+    for (let s = 0; s < 128; s++) {
       const btn = document.createElement('button');
       btn.className = 'seq-step' + (s % 4 === 0 ? ' beat-start' : '') + (s % 16 === 0 ? ' bar-start' : '') + (s >= seqLen ? ' off' : '');
       btn.dataset.step = s;
@@ -967,7 +967,7 @@
     }
     return grid;
   }
-  function paintAllSteps() { for (let s = 0; s < Math.min(seqLen, 64); s++) paintStep(seqTrack, s); }
+  function paintAllSteps() { for (let s = 0; s < Math.min(seqLen, 128); s++) paintStep(seqTrack, s); }
   function renderStep() {
     const p = seqTrack, drum = isDrumPart(p);
     seqBody.appendChild(makePads(toggleStep));
