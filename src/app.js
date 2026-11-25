@@ -1554,8 +1554,14 @@
       for (let prog = 0; prog < 128 && learning; prog++) {
         SEQTRAK.loadSound(p, 63, lsb, prog).forEach(m => MIDIManager.send(m));
         await new Promise(r => setTimeout(r, 140));
-        const d = await askRetry(SEQTRAK.soundNameAddr(p), 600, 2);
+        let d = await askRetry(SEQTRAK.soundNameAddr(p), 600, 2);
+        if (!d) {   // no reply (busy link) - send the sound again and wait longer rather than skip it
+          SEQTRAK.loadSound(p, 63, lsb, prog).forEach(m => MIDIManager.send(m));
+          await new Promise(r => setTimeout(r, 400));
+          d = await askRetry(SEQTRAK.soundNameAddr(p), 900, 3);
+        }
         const name = d ? SEQTRAK.decodeName(d) : null;
+        if (!d) { learnStatus.textContent = `Learning... bank ${lsb - 31}, slot ${prog + 1} - no reply, carrying on`; continue; }
         if (name && name !== prev) {
           if (!found[norm(name)]) found[norm(name)] = [lsb, prog, name];
           prev = name; newHere++; total++; sinceNew = 0;
@@ -1567,11 +1573,13 @@
       if (newHere === 0) break;
     }
     if (Object.keys(found).length) {
-      userMap = found;
+      userMap = Object.assign({}, userMap, found);   // a second LEARN adds to the first, never loses what it already found
       try { localStorage.setItem(USERMAP_KEY, JSON.stringify(userMap)); } catch (e) {}
     }
     learning = false; learnBtn.textContent = 'LEARN';
     learnLabel();
+    const missing = M1_SOUNDS.SOUNDS ? M1_SOUNDS.SOUNDS.filter(s => !userMap[norm(s.name)]).map(s => s.name.replace(/^M1 /, '')) : [];
+    if (missing.length) learnStatus.textContent += ` - missing: ${missing.slice(0, 8).join(', ')}${missing.length > 8 ? ` +${missing.length - 8} more` : ''} (tap LEARN again to add them)`;
     const piano = userMap[norm('M1 Piano')];
     if (piano) SEQTRAK.loadSound(p, 63, piano[0], piano[1]).forEach(m => MIDIManager.send(m));
   });
