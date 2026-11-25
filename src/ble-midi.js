@@ -102,18 +102,29 @@ const BLEMidi = (() => {
     if (writing) return;
     writing = true;
     while (q.length && chr) {
-      const pkt = q.shift();
-      try {
-        if (chr.writeValueWithoutResponse) await chr.writeValueWithoutResponse(pkt);
-        else await chr.writeValue(pkt);
-        txCount++;
-      } catch (e) { lastErr = 'write: ' + e.message; }
+      const m = q.shift();                                  // one MIDI message at a time, encoded when it goes out
+      for (const pkt of encode(m.bytes)) {
+        try {
+          if (chr.writeValueWithoutResponse) await chr.writeValueWithoutResponse(pkt);
+          else await chr.writeValue(pkt);
+          txCount++;
+        } catch (e) { lastErr = 'write: ' + e.message; }
+      }
     }
     writing = false;
   }
+  // a newer value for the same parameter replaces one still waiting, so moving a knob never builds a backlog
+  function keyOf(d) {
+    if (d[0] === 0xF0 && d.length > 9 && (d[2] & 0xF0) === 0x10) return 'sx' + d[2] + ':' + d[6] + ':' + d[7] + ':' + d[8];
+    if ((d[0] & 0xF0) === 0xB0) return 'cc' + d[0] + ':' + d[1];
+    if ((d[0] & 0xF0) === 0xE0) return 'pb' + d[0];
+    return null;
+  }
   function send(bytes) {
     if (!chr) return false;
-    encode(Array.from(bytes)).forEach(p => q.push(p));
+    const b = Array.from(bytes), k = keyOf(b);
+    if (k) { const i = q.findIndex(m => m.k === k); if (i >= 0) { q[i].bytes = b; return true; } }
+    q.push({ k, bytes: b });
     pump();
     return true;
   }

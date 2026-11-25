@@ -172,9 +172,15 @@
   function applyIncoming(key, value) {
     const set = REG.get(key);
     if (!set) return false;
-    set.forEach(w => { if (document.body.contains(w)) w.setValue(value); });
+    const now = performance.now();
+    // don't let the unit's echo of an older value pull a control back while (or just after) it's being moved
+    set.forEach(w => { if (document.body.contains(w) && !(w._touched && now - w._touched < 700)) w.setValue(value); });
     return true;
   }
+  ['pointerdown', 'pointermove', 'wheel'].forEach(ev => document.addEventListener(ev, e => {
+    const w = e.target && e.target.closest && e.target.closest('.knob-wrap, .fb-fader');
+    if (w && (ev !== 'pointermove' || e.buttons)) w._touched = performance.now();
+  }, { capture: true, passive: true }));
   function sendDef(def, v) { SEQTRAK.messagesFor(def, v).forEach(m => MIDIManager.send(m)); }
 
   // knob bound to a parameter definition
