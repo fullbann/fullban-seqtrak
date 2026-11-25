@@ -19,10 +19,10 @@ const SEQTRAK = (() => {
     { id: 'hat2',  name: 'HAT 2',   ch: 4,  group: 'drum',    color: '#80c040' },
     { id: 'perc1', name: 'PERC 1',  ch: 5,  group: 'drum',    color: '#40c060' },
     { id: 'perc2', name: 'PERC 2',  ch: 6,  group: 'drum',    color: '#30b0a0' },
-    { id: 'syn1',  name: 'SYNTH 1', ch: 7,  group: 'synth',   color: '#2d8cf0' },
-    { id: 'syn2',  name: 'SYNTH 2', ch: 8,  group: 'synth',   color: '#6060e0' },
+    { id: 'syn1',  name: 'SYNTH 1', short: 'SYN 1', ch: 7,  group: 'synth',   color: '#2d8cf0' },
+    { id: 'syn2',  name: 'SYNTH 2', short: 'SYN 2', ch: 8,  group: 'synth',   color: '#6060e0' },
     { id: 'dx',    name: 'DX',      ch: 9,  group: 'dx',      color: '#9040d0' },
-    { id: 'samp',  name: 'SAMPLER', ch: 10, group: 'sampler', color: '#c040a0' },
+    { id: 'samp',  name: 'SAMPLER', short: 'SAMP', ch: 10, group: 'sampler', color: '#c040a0' },
   ];
 
   // ---- value formatters ----
@@ -225,6 +225,24 @@ const SEQTRAK = (() => {
     del: (p, step) => buildParamData([0x70, 0x20 | p, 0x00], [step]),
     readAddr: (p, step) => [0x70, 0x40 | p, step],
   };
+  // ---- Piano rolls (04-sequencer-editing) ----
+  // Synth block 72-75 for parts 7-10, numbered locally (t = part - 7), verified on hardware.
+  // Drum block 22-25 for parts 0-6 re-typed to SYNTH, numbered by global part, verified on hardware.
+  // Event time = step * 120 + 60 (centre of the step), gate 120 = one 16th.
+  function rollBlock(p) { return p >= 7 ? { add: 0x72, del: 0x74, read: 0x75, n: p - 7 } : { add: 0x22, del: 0x24, read: 0x25, n: p }; }
+  const ROLL = {
+    addNote: (p, time, note, vel, gate) => { const b = rollBlock(p); return buildParamData([b.add, b.n << 4, 0x00],
+      [(time >> 7) & 0x7F, time & 0x7F, 0x00, note & 0x7F, vel & 0x7F, 0x00, (gate >> 7) & 0x7F, gate & 0x7F]); },
+    del: (p, idx) => { const b = rollBlock(p); return frame(0x10, [b.del, (b.n << 4) | ((idx >> 7) & 0x0F), idx & 0x7F]); },
+    readAddr: (p, idx) => { const b = rollBlock(p); return [b.read, (b.n << 4) | ((idx >> 7) & 0x0F), idx & 0x7F]; },
+  };
+  // Track type, 01 1p 3C PartAwmType (verified on hardware): 1 DRUM, 2 SYNTH, 3 DRUM KIT, 4 DX, 5 SAMPLER
+  const TYPE_ADDR = p => [0x01, 0x10 | p, 0x3C];
+  const TYPE_NAMES = { 1: 'DRUM', 2: 'SYNTH', 3: 'KIT', 4: 'DX', 5: 'SAMPLER' };
+  const DEFAULT_TYPE = p => (p < 7 ? 1 : p < 9 ? 2 : p === 9 ? 4 : 5);
+  // Pattern length of pattern n (0-5): 30 5p (16 + 2n), 2 bytes 7-bit, 1-128 steps (verified for pattern 1)
+  const PATTERN_STEPS = (p, n) => [0x30, 0x50 | p, 0x16 + 2 * n];
+  const PATTERN_MODE = [0x30, 0x40, 0x79];     // 1 = all six patterns reachable (verified)
   const PATTERN_SELECT = p => ({ kind: 'sx', addr: [0x30, 0x50 | p, 0x0F], min: 0, max: 5 });   // verified
   const RECORDING = { kind: 'sx', addr: [0x01, 0x10, 0x21], min: 0, max: 1 };                  // verified: only takes while playing
 
@@ -235,7 +253,7 @@ const SEQTRAK = (() => {
   return {
     TRACKS, P, MASTER_VOLUME, DX_COMMON, DX_OP, LFO_WAVES, fmt,
     buildParam, buildParamData, buildRequest, unpack7, decodeName, soundNameAddr, loadSound,
-    FX, fxTypeName, STEP, PATTERN_SELECT, RECORDING, buildCC, messagesFor, keyOf, parseParamChange,
+    FX, fxTypeName, STEP, ROLL, TYPE_ADDR, TYPE_NAMES, DEFAULT_TYPE, PATTERN_STEPS, PATTERN_MODE, PATTERN_SELECT, RECORDING, buildCC, messagesFor, keyOf, parseParamChange,
     buildDxCommonMsg, buildDxOpMsg,
   };
 })();

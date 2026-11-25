@@ -6,10 +6,12 @@ here = os.path.dirname(os.path.abspath(__file__))
 rd = lambda f: open(os.path.join(here, f), encoding='utf-8').read().replace('\r', '')
 html = rd('index.html')
 css = rd('style.css')
-bg = os.path.join(here, 'seqtrak-bg.jpg')
-if os.path.exists(bg):
-    data = base64.b64encode(open(bg, 'rb').read()).decode()
-    css = css.replace("url('seqtrak-bg.jpg')", "url('data:image/jpeg;base64,%s')" % data)
+# inline every local image the stylesheet uses
+for img in sorted(set(re.findall(r"url\('([\w.-]+\.(?:jpg|png|webp))'\)", css))):
+    p = os.path.join(here, img)
+    if os.path.exists(p):
+        mime = {'png':'image/png','webp':'image/webp'}.get(img.rsplit('.',1)[1],'image/jpeg')
+        css = css.replace("url('%s')" % img, "url('data:%s;base64,%s')" % (mime, base64.b64encode(open(p, 'rb').read()).decode()))
 html = html.replace('<link rel="stylesheet" href="style.css">', '<style>\n' + css + '\n</style>')
 
 

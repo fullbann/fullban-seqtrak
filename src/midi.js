@@ -265,13 +265,27 @@ const MIDIManager = (() => {
 
   // ---- Bluetooth (BLE-MIDI) ----
   let bleOn = false;
-  async function connectBLE() {
+  let onBleState = null;
+  function wireBLE() {
     BLEMidi.onMessage = (m) => { inCount++; if (onMidiMessage) onMidiMessage(m); };
-    BLEMidi.onState = (up) => { bleOn = up; if (!up && onDisconnect) onDisconnect(); };
+    BLEMidi.onState = (st) => {
+      const was = bleOn;
+      bleOn = st === 'connected';
+      if (onBleState) onBleState(st);
+      if (bleOn && !was && onConnect) onConnect({ name: BLEMidi.name() }, { name: BLEMidi.name() });
+      if (!bleOn && was && st !== 'reconnecting' && onDisconnect) onDisconnect();
+    };
+  }
+  async function connectBLE() {
+    wireBLE();
     const name = await BLEMidi.connect();
     bleOn = true;
-    if (onConnect) onConnect({ name }, { name });
     return name;
+  }
+  async function autoBLE() {
+    if (typeof BLEMidi === 'undefined') return null;
+    wireBLE();
+    return BLEMidi.reconnectRemembered();
   }
 
   function isConnected() {
@@ -344,7 +358,8 @@ const MIDIManager = (() => {
     sendDxCommon,
     sendDxOp,
     diag,
-    connectBLE,
+    connectBLE, autoBLE,
+    set onBleState(fn) { onBleState = fn; },
     bleSupported: () => (typeof BLEMidi !== 'undefined') && BLEMidi.supported(),
     inject: (d) => { if (onMidiMessage) onMidiMessage(d); },   // test hook: feed a message as if it came from the unit
     get bridgeMode() { return bridgeMode; },

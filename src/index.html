@@ -27,6 +27,7 @@
 
     <nav id="page-tabs">
       <button class="tab active" data-page="mix">MIX</button>
+      <button class="tab" data-page="launch">LAUNCH</button>
       <button class="tab" data-page="dx">DX</button>
       <button class="tab" data-page="fx">FX</button>
       <button class="tab" data-page="seq">SEQ</button>
@@ -58,8 +59,31 @@
       <div class="mix-right">
         <div class="snd-head" id="snd-head"></div>
         <div class="snd-grid" id="snd-grid"></div>
+        <div class="mix-art"><div class="mix-unit"></div><div class="mix-brand"><span>SEQTRAK</span></div></div>
       </div>
     </section>
+
+    <!-- LAUNCH: clip launch -->
+    <section id="page-launch" class="page hidden">
+      <div class="launch-top">
+        <button class="seq-btn launch-play" title="Play">&#9654;</button>
+        <button class="seq-btn launch-stop" title="Stop">&#9632;</button>
+        <span class="launch-note">Tap a clip to switch that track's pattern · ALL n switches every track · SCENES 1-8 recall your own mixes (STORE then tap a scene to save what's playing).</span>
+      </div>
+      <div class="launch-grid" id="launch-grid"></div>
+    </section>
+
+    <!-- factory preset browser (opens over the MIX page) -->
+    <div id="preset-browser" class="preset-browser hidden">
+      <div class="br-head">
+        <div class="br-title"></div>
+        <input class="br-search" type="search" placeholder="Search presets...">
+        <button class="br-close">CLOSE ✕</button>
+      </div>
+      <div class="br-cats"></div>
+      <div class="br-count"></div>
+      <div class="br-list"></div>
+    </div>
 
     <!-- DX -->
     <section id="page-dx" class="page hidden">
@@ -81,33 +105,39 @@
     <!-- SEQ -->
     <section id="page-seq" class="page hidden">
       <div class="seq-section">
-        <div class="seq-transport">
-          <button class="seq-btn" id="seq-play" title="Play">&#9654;</button>
-          <button class="seq-btn" id="seq-stop" title="Stop">&#9632;</button>
-          <button class="seq-btn" id="seq-rec" title="Record">&#9679;</button>
+        <div class="seq-top">
+          <div class="seq-transport">
+            <button class="seq-btn" id="seq-play" title="Play">&#9654;</button>
+            <button class="seq-btn" id="seq-stop" title="Stop">&#9632;</button>
+            <button class="seq-btn" id="seq-rec" title="Record">&#9679;</button>
+          </div>
+          <div class="seq-modes">
+            <button class="seq-mode active" data-mode="step">STEP</button>
+            <button class="seq-mode" data-mode="chords">CHORDS</button>
+            <button class="seq-mode" data-mode="roll">PIANO ROLL</button>
+          </div>
+          <div class="seq-patterns">
+            <span class="seq-lbl">PATTERN</span>
+            <button class="pattern-btn active" data-pattern="0">1</button>
+            <button class="pattern-btn" data-pattern="1">2</button>
+            <button class="pattern-btn" data-pattern="2">3</button>
+            <button class="pattern-btn" data-pattern="3">4</button>
+            <button class="pattern-btn" data-pattern="4">5</button>
+            <button class="pattern-btn" data-pattern="5">6</button>
+          </div>
+          <div class="seq-length">
+            <span class="seq-lbl">STEPS</span>
+            <button class="len-btn active" data-len="16">16</button>
+            <button class="len-btn" data-len="32">32</button>
+          </div>
           <div class="seq-bpm">
             <label>BPM</label>
             <input type="number" id="seq-bpm-input" min="20" max="300" value="130">
           </div>
         </div>
-        <div class="seq-patterns">
-          <button class="pattern-btn active" data-pattern="0">1</button>
-          <button class="pattern-btn" data-pattern="1">2</button>
-          <button class="pattern-btn" data-pattern="2">3</button>
-          <button class="pattern-btn" data-pattern="3">4</button>
-          <button class="pattern-btn" data-pattern="4">5</button>
-          <button class="pattern-btn" data-pattern="5">6</button>
-        </div>
         <div class="track-chips" id="seq-track-chips"></div>
         <div class="seq-msg" id="seq-msg"></div>
-        <div class="seq-grid-wrap">
-          <div class="seq-step-numbers" id="seq-step-numbers"></div>
-          <div class="seq-grid" id="seq-grid"></div>
-        </div>
-        <div class="seq-length">
-          <button class="len-btn active" data-len="16">16</button>
-          <button class="len-btn" data-len="32">32</button>
-        </div>
+        <div class="seq-body" id="seq-body"></div>
       </div>
     </section>
 
@@ -116,24 +146,19 @@
       <div class="m1-section">
         <!-- M-One header -->
         <div class="m1-header">
-          <div class="m1-logo">
-            <span class="m1-logo-fb">FULLBAN</span>
-            <span class="m1-logo-name">M-<span class="m1-accent">ONE</span></span>
-          </div>
           <div class="m1-learn">
             <button class="m1-learn-btn" id="m1-learn">LEARN</button>
             <span class="m1-learn-status" id="m1-learn-status"></span>
           </div>
           <div class="m1-target">
             <span class="m1-target-label">TO:</span>
-            <button class="m1-target-btn active" data-track="7">SYN 1</button>
-            <button class="m1-target-btn" data-track="8">SYN 2</button>
           </div>
         </div>
 
         <!-- Sub-tabs -->
         <div class="m1-subtabs">
           <button class="m1-subtab active" data-m1page="play">PLAY</button>
+          <button class="m1-subtab" data-m1page="lib">LIBRARY</button>
           <button class="m1-subtab" data-m1page="fx">FX</button>
         </div>
 
@@ -152,7 +177,14 @@
             <div class="section-title" style="color:var(--fb-cyan)"><span class="dot" style="background:var(--fb-cyan)"></span>QUICK EDIT</div>
             <div id="m1-quickedit-knobs"></div>
           </div>
-          <div class="section-panel">
+      <div class="m1-hero">
+        <div class="m1-hero-text">
+          <div class="m1-hero-big">M1</div>
+          <div class="m1-hero-sub">FULLBAN <b>M-ONE</b> · KORG M1 ON THE SEQTRAK</div>
+        </div>
+        <div class="m1-hero-photo"></div>
+      </div>
+          <div class="section-panel m1-snd">
             <div class="section-title" style="color:var(--fb-blue)"><span class="dot" style="background:var(--fb-blue)"></span>SOUND</div>
             <div id="m1-sound-knobs"></div>
           </div>
@@ -164,6 +196,22 @@
             </div>
             <div class="m1-pcats" id="m1-pcats"></div>
             <div class="m1-pgrid" id="m1-pgrid"></div>
+          </div>
+        </div>
+
+        <!-- LIBRARY: the user's own M1 program banks, kept on this device -->
+        <div class="m1-subpage" id="m1-lib">
+          <div class="lib-top">
+            <label class="lib-import">IMPORT BANKS<input type="file" id="lib-files" multiple accept=".syx,.m1b,.m1lib"></label>
+            <span class="lib-status" id="lib-status"></span>
+            <input class="lib-search" id="lib-search" type="search" placeholder="Search banks or programs...">
+          </div>
+          <div class="lib-body">
+            <div class="lib-banks" id="lib-banks"></div>
+            <div class="lib-progs-wrap">
+              <div class="lib-info" id="lib-info">Pick a bank, then tap a program to put it on the M1 track.</div>
+              <div class="lib-progs" id="lib-progs"></div>
+            </div>
           </div>
         </div>
 
@@ -209,8 +257,11 @@
   </div>
 
   <script src="fx-types.js"></script>
+  <script src="presets.js"></script>
+  <script src="progressions.js"></script>
   <script src="seqtrak-sysex.js"></script>
   <script src="m1-sounds.js"></script>
+  <script src="m1-library.js"></script>
   <script src="knob.js"></script>
   <script src="ble-midi.js"></script>
   <script src="midi.js"></script>

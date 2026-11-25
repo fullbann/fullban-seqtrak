@@ -118,30 +118,73 @@ const BLEMidi = (() => {
     return true;
   }
 
-  // ---------- connect ----------
-  async function connect() {
-    if (!supported()) throw new Error('Bluetooth needs Chrome on Android/PC and a secure (https) page');
-    lastErr = '';
-    device = await navigator.bluetooth.requestDevice({
-      filters: [{ services: [SVC] }, { namePrefix: 'SEQTRAK' }],
-      optionalServices: [SVC],
-    });
-    device.addEventListener('gattserverdisconnected', () => { chr = null; if (onState) onState(false); });
+  // ---------- connect / auto-reconnect ----------
+  let wanted = false, retryTimer = null, tries = 0;
+  const setState = st => { if (onState) onState(st); };           // 'connected' | 'reconnecting' | 'lost' | 'off'
+  async function attach() {
     const server = await device.gatt.connect();
     const svc = await server.getPrimaryService(SVC);
     chr = await svc.getCharacteristic(CHR);
     chr.addEventListener('characteristicvaluechanged', e => decode(new Uint8Array(e.target.value.buffer)));
     await chr.startNotifications();
-    if (onState) onState(true);
+    sysex = null; running = 0; q.length = 0;
+    tries = 0;
+    setState('connected');
+  }
+  function onDrop() {
+    chr = null;
+    if (!wanted) { setState('off'); return; }
+    scheduleRetry();
+  }
+  function scheduleRetry() {
+    clearTimeout(retryTimer);
+    if (tries >= 12) { setState('lost'); return; }      // ~1 minute of trying, then give up
+    setState('reconnecting');
+    const wait = Math.min(8000, 500 * Math.pow(2, tries++));
+    retryTimer = setTimeout(async () => {
+      try { await attach(); } catch (e) { lastErr = 'reconnect: ' + e.message; scheduleRetry(); }
+    }, wait);
+  }
+  function useDevice(d) {
+    if (device && device !== d) device.removeEventListener('gattserverdisconnected', onDrop);
+    device = d;
+    device.addEventListener('gattserverdisconnected', onDrop);
+    try { localStorage.setItem('fbSeqtrakBleName', device.name || ''); } catch (e) {}
+  }
+  async function connect() {
+    if (!supported()) throw new Error('Bluetooth needs Chrome on Android/PC and a secure (https) page');
+    lastErr = '';
+    const d = await navigator.bluetooth.requestDevice({
+      filters: [{ services: [SVC] }, { namePrefix: 'SEQTRAK' }],
+      optionalServices: [SVC],
+    });
+    useDevice(d);
+    wanted = true; tries = 0;
+    await attach();
     return device.name || 'SEQTRAK (Bluetooth)';
   }
-  function disconnect() { try { device && device.gatt.connected && device.gatt.disconnect(); } catch (e) {} chr = null; }
+  // after the app restarts: reconnect to the SEQTRAK picked last time, where Chrome allows it
+  async function reconnectRemembered() {
+    if (!supported() || !navigator.bluetooth.getDevices) return null;
+    try {
+      const want = localStorage.getItem('fbSeqtrakBleName');
+      const list = await navigator.bluetooth.getDevices();
+      const d = list.find(x => want ? x.name === want : /SEQTRAK/i.test(x.name || ''));
+      if (!d) return null;
+      useDevice(d);
+      wanted = true; tries = 0;
+      await attach();
+      return device.name;
+    } catch (e) { lastErr = 'auto: ' + e.message; return null; }
+  }
+  function retryNow() { if (device && wanted) { tries = 0; scheduleRetry(); } }
+  function disconnect() { wanted = false; clearTimeout(retryTimer); try { device && device.gatt.connected && device.gatt.disconnect(); } catch (e) {} chr = null; setState('off'); }
 
   return {
-    supported, connect, disconnect, send,
+    supported, connect, disconnect, send, reconnectRemembered, retryNow,
     isConnected: () => !!chr,
     name: () => (device && device.name) || 'SEQTRAK (Bluetooth)',
-    diag: () => `BLUETOOTH ${chr ? 'connected to ' + (device && device.name) : 'not connected'} | in: ${rxCount} | out pkts: ${txCount}${lastErr ? ' | ' + lastErr : ''}`,
+    diag: () => `BLUETOOTH ${chr ? 'connected to ' + (device && device.name) : (wanted ? 'reconnecting' : 'not connected')} | in: ${rxCount} | out pkts: ${txCount}${lastErr ? ' | ' + lastErr : ''}`,
     set onMessage(f) { onMessage = f; },
     set onState(f) { onState = f; },
     _encode: encode, _decode: decode,   // for tests
