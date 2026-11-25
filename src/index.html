@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Fullban SEQ-TRAK</title>
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#0a0e14">
+<meta name="mobile-web-app-capable" content="yes">
+<link rel="icon" href="icon-192.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <header id="topbar">
+      <div class="topbar-left">
+        <span class="logo">FULLBAN</span>
+        <span class="product">SEQ-TRAK</span>
+      </div>
+      <div class="topbar-right">
+        <button id="midi-btn" class="midi-status disconnected" title="Connect MIDI">
+          <span class="midi-dot"></span>
+          <span class="midi-label">MIDI</span>
+        </button>
+      </div>
+    </header>
+
+    <nav id="page-tabs">
+      <button class="tab active" data-page="mix">MIX</button>
+      <button class="tab" data-page="dx">DX</button>
+      <button class="tab" data-page="fx">FX</button>
+      <button class="tab" data-page="seq">SEQ</button>
+      <button class="tab" data-page="m1">M-ONE</button>
+    </nav>
+
+    <!-- MIDI overlay -->
+    <div id="midi-overlay" class="overlay hidden">
+      <div class="overlay-content">
+        <h2>Connect to SEQTRAK</h2>
+        <p id="midi-status-text">Searching for MIDI devices...</p>
+        <div id="midi-devices"></div>
+        <p id="midi-diag" style="font-size:10px;color:#9fb0c0;margin:6px 0;word-break:break-all"></p>
+        <button id="midi-ble" class="btn btn-ble">&#x1F537; Connect Bluetooth</button>
+        <p id="midi-ble-help" style="font-size:11px;color:#9fb0c0;margin:4px 0 8px">On the SEQTRAK: hold <b>ALL</b> and press <b>SWING</b> (meter lights white, 30 s), then tap Connect Bluetooth. Don't pair it in Android's Bluetooth settings.</p>
+        <button id="midi-scan" class="btn">Scan USB</button>
+        <button id="midi-tempo" class="btn btn-dim">Read tempo</button>
+        <button id="midi-sync" class="btn btn-dim">Sync from unit</button>
+        <button id="midi-test" class="btn btn-dim">Test note</button>
+        <button id="midi-close" class="btn btn-dim">Close</button>
+      </div>
+    </div>
+
+    <!-- MIX: mixer strips + selected track's sound -->
+    <section id="page-mix" class="page active">
+      <div class="mix-left panel-glass">
+        <div class="mix-strips" id="mix-strips"></div>
+      </div>
+      <div class="mix-right">
+        <div class="snd-head" id="snd-head"></div>
+        <div class="snd-grid" id="snd-grid"></div>
+      </div>
+    </section>
+
+    <!-- DX -->
+    <section id="page-dx" class="page hidden">
+      <div class="dx-left panel-glass">
+        <div class="dx-left-head">
+          <div class="dx-title">OPERATORS</div>
+          <div id="dx-op-switch"></div>
+        </div>
+        <div class="dx-ops" id="dx-ops"></div>
+      </div>
+      <div class="dx-right" id="dx-right"></div>
+    </section>
+
+    <!-- FX -->
+    <section id="page-fx" class="page hidden">
+      <div class="fx-section">
+        <div class="track-chips" id="fx-track-chips"></div>
+        <div class="section-panel">
+          <div class="section-title" style="color:var(--fb-text)">
+            <span class="dot" style="background:var(--fb-text-dim)"></span>TRACK SENDS
+          </div>
+          <div id="fx-sends-knobs"></div>
+        </div>
+        <div class="section-panel">
+          <div class="section-title" style="color:var(--fb-cyan)">
+            <span class="dot" style="background:var(--fb-cyan)"></span>REVERB
+          </div>
+          <div id="fx-reverb-knobs"></div>
+        </div>
+        <div class="section-panel">
+          <div class="section-title" style="color:var(--fb-orange)">
+            <span class="dot" style="background:var(--fb-orange)"></span>DELAY
+          </div>
+          <div id="fx-delay-knobs"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SEQ -->
+    <section id="page-seq" class="page hidden">
+      <div class="seq-section">
+        <div class="seq-transport">
+          <button class="seq-btn" id="seq-play" title="Play">&#9654;</button>
+          <button class="seq-btn" id="seq-stop" title="Stop">&#9632;</button>
+          <button class="seq-btn" id="seq-rec" title="Record">&#9679;</button>
+          <div class="seq-bpm">
+            <label>BPM</label>
+            <input type="number" id="seq-bpm-input" min="20" max="300" value="130">
+          </div>
+        </div>
+        <div class="seq-patterns">
+          <button class="pattern-btn active" data-pattern="0">1</button>
+          <button class="pattern-btn" data-pattern="1">2</button>
+          <button class="pattern-btn" data-pattern="2">3</button>
+          <button class="pattern-btn" data-pattern="3">4</button>
+          <button class="pattern-btn" data-pattern="4">5</button>
+          <button class="pattern-btn" data-pattern="5">6</button>
+        </div>
+        <div class="track-chips" id="seq-track-chips"></div>
+        <div class="seq-grid-wrap">
+          <div class="seq-step-numbers" id="seq-step-numbers"></div>
+          <div class="seq-grid" id="seq-grid"></div>
+        </div>
+        <div class="seq-length">
+          <button class="len-btn active" data-len="16">16</button>
+          <button class="len-btn" data-len="32">32</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- M-ONE -->
+    <section id="page-m1" class="page hidden">
+      <div class="m1-section">
+        <!-- M-One header -->
+        <div class="m1-header">
+          <div class="m1-logo">
+            <span class="m1-logo-fb">FULLBAN</span>
+            <span class="m1-logo-name">M-<span class="m1-accent">ONE</span></span>
+          </div>
+          <div class="m1-target">
+            <span class="m1-target-label">TO:</span>
+            <button class="m1-target-btn active" data-track="7">SYN 1</button>
+            <button class="m1-target-btn" data-track="8">SYN 2</button>
+          </div>
+        </div>
+
+        <!-- Sub-tabs -->
+        <div class="m1-subtabs">
+          <button class="m1-subtab active" data-m1page="play">PLAY</button>
+          <button class="m1-subtab" data-m1page="browse">BROWSE</button>
+          <button class="m1-subtab" data-m1page="fx">FX</button>
+        </div>
+
+        <!-- PLAY -->
+        <div class="m1-subpage active" id="m1-play">
+          <div class="m1-preset-select">
+            <button class="m1-preset-arrow" id="m1-prev">&#9664;</button>
+            <div class="m1-preset-display">
+              <div class="m1-preset-label" id="m1-preset-label">MULTISOUND 0</div>
+              <div class="m1-preset-name" id="m1-preset-name">M1 Piano</div>
+            </div>
+            <button class="m1-preset-arrow" id="m1-next">&#9654;</button>
+          </div>
+          <div class="section-panel">
+            <div class="section-title" style="color:var(--fb-cyan)"><span class="dot" style="background:var(--fb-cyan)"></span>QUICK EDIT</div>
+            <div id="m1-quickedit-knobs"></div>
+          </div>
+          <div class="section-panel">
+            <div class="section-title" style="color:var(--fb-blue)"><span class="dot" style="background:var(--fb-blue)"></span>SOUND</div>
+            <div id="m1-sound-knobs"></div>
+          </div>
+        </div>
+
+        <!-- BROWSE -->
+        <div class="m1-subpage" id="m1-browse">
+          <div class="m1-categories" id="m1-categories">
+            <button class="cat-btn active" data-cat="ALL">ALL <span class="cat-count">100</span></button>
+          </div>
+          <div class="m1-range-tabs" id="m1-range-tabs">
+            <button class="m1-range active" data-range="0">00-19</button>
+            <button class="m1-range" data-range="20">20-39</button>
+            <button class="m1-range" data-range="40">40-59</button>
+            <button class="m1-range" data-range="60">60-79</button>
+            <button class="m1-range" data-range="80">80-99</button>
+          </div>
+          <div class="m1-sound-grid" id="m1-sound-grid"></div>
+        </div>
+
+        <!-- FX -->
+        <div class="m1-subpage" id="m1-fx">
+          <div class="m1-fx-row">
+            <div class="section-panel m1-fx-panel">
+              <div class="m1-fx-header">
+                <span class="section-title" style="color:var(--fb-cyan)"><span class="dot" style="background:var(--fb-cyan)"></span>EFFECT 1</span>
+                <button class="op-toggle on" id="m1-fx1-toggle"></button>
+              </div>
+              <div class="m1-fx-cats" id="m1-fx1-cats">
+                <button class="m1-fxcat active">REVERB</button>
+                <button class="m1-fxcat">DELAY</button>
+                <button class="m1-fxcat">MOD</button>
+                <button class="m1-fxcat">EQ</button>
+              </div>
+              <div id="m1-fx1-knobs"></div>
+            </div>
+            <div class="section-panel m1-fx-panel">
+              <div class="m1-fx-header">
+                <span class="section-title" style="color:var(--fb-orange)"><span class="dot" style="background:var(--fb-orange)"></span>EFFECT 2</span>
+                <button class="op-toggle on" id="m1-fx2-toggle"></button>
+              </div>
+              <div class="m1-fx-cats" id="m1-fx2-cats">
+                <button class="m1-fxcat active">REVERB</button>
+                <button class="m1-fxcat">DELAY</button>
+                <button class="m1-fxcat">MOD</button>
+                <button class="m1-fxcat">EQ</button>
+              </div>
+              <div id="m1-fx2-knobs"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Loaded bar -->
+        <div class="m1-loaded" id="m1-loaded">
+          <span class="m1-loaded-label">LOADED:</span>
+          <span class="m1-loaded-name" id="m1-loaded-name">—</span>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script src="seqtrak-sysex.js"></script>
+  <script src="m1-sounds.js"></script>
+  <script src="knob.js"></script>
+  <script src="ble-midi.js"></script>
+  <script src="midi.js"></script>
+  <script src="app.js"></script>
+  <script>
+    if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+  </script>
+</body>
+</html>

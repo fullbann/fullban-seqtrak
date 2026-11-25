@@ -1,0 +1,149 @@
+/* ============================================
+   FULLBAN SEQ-TRAK — Bluetooth MIDI (BLE-MIDI over Web Bluetooth)
+   Standard MIDI-over-Bluetooth-LE service. Works in Chrome on Android
+   (https page). On the SEQTRAK: hold ALL and press SWING, then Connect.
+   Do NOT pair the SEQTRAK in Android's Bluetooth settings.
+   ============================================ */
+
+const BLEMidi = (() => {
+  const SVC = '03b80e5a-ede8-4b33-a751-6ce34ec4c700';
+  const CHR = '7772e5db-3868-4112-a1a9-f2669d106bf3';
+  const PKT = 20;                      // safe packet size (default MTU 23 - 3)
+
+  let device = null, chr = null;
+  let onMessage = null, onState = null;
+  let rxCount = 0, txCount = 0, lastErr = '';
+
+  const supported = () => !!(navigator.bluetooth && window.isSecureContext);
+
+  // ---------- timestamps ----------
+  function ts() {
+    const t = Math.floor(performance.now()) & 0x1FFF;     // 13-bit ms
+    return [0x80 | ((t >> 7) & 0x3F), 0x80 | (t & 0x7F)];  // [header, timestamp-low]
+  }
+
+  // ---------- encode: raw MIDI bytes -> BLE packets ----------
+  function encode(bytes) {
+    const packets = [];
+    const [hdr, tlo] = ts();
+    let cur = [hdr];
+    const flush = () => { if (cur.length > 1) packets.push(Uint8Array.from(cur)); cur = [hdr]; };
+    let i = 0;
+    while (i < bytes.length) {
+      const st = bytes[i];
+      if (st === 0xF0) {                                   // SysEx, split across packets
+        let j = i; while (j < bytes.length && bytes[j] !== 0xF7) j++;
+        const body = bytes.slice(i, j);                    // F0 .. data (without F7)
+        if (cur.length + 2 > PKT) flush();
+        cur.push(tlo);
+        for (const b of body) {
+          if (cur.length >= PKT) { flush(); }             // continuation packet: header + data
+          cur.push(b);
+        }
+        if (cur.length + 2 > PKT) flush();
+        cur.push(tlo, 0xF7);
+        i = j + 1;
+        continue;
+      }
+      if (st < 0x80) { i++; continue; }
+      const n = (st >= 0xF8) ? 1 : ((st & 0xF0) === 0xC0 || (st & 0xF0) === 0xD0) ? 2 : (st >= 0xF0 ? 1 : 3);
+      const msg = bytes.slice(i, i + n);
+      if (cur.length + 1 + msg.length > PKT) flush();
+      cur.push(tlo, ...msg);
+      i += n;
+    }
+    flush();
+    return packets;
+  }
+
+  // ---------- decode: BLE packet -> MIDI messages ----------
+  let sysex = null, running = 0;
+  const dataLen = st => (st >= 0xF0) ? 0 : ((st & 0xF0) === 0xC0 || (st & 0xF0) === 0xD0) ? 1 : 2;
+  function emit(m) { rxCount++; if (onMessage) onMessage(m); }
+
+  function decode(p) {
+    if (p.length < 2 || !(p[0] & 0x80)) return;
+    let i = 1;
+    while (i < p.length) {
+      let b = p[i];
+      if (sysex) {
+        if (b < 0x80) { sysex.push(b); i++; continue; }
+        // timestamp byte inside sysex; next is F7 (end) or a real-time message
+        i++; if (i >= p.length) break;
+        b = p[i];
+        if (b === 0xF7) { sysex.push(0xF7); emit(sysex); sysex = null; i++; continue; }
+        if (b >= 0xF8) { emit([b]); i++; continue; }
+        sysex = null; i--; continue;                        // other status: drop sysex, re-read from its timestamp
+      }
+      if (b & 0x80) {                                       // timestamp
+        i++; if (i >= p.length) break;
+        b = p[i];
+      }
+      if (b & 0x80) {                                       // status byte
+        if (b === 0xF0) { sysex = [0xF0]; i++; continue; }
+        if (b >= 0xF8) { emit([b]); i++; continue; }
+        if (b >= 0xF1) { running = 0; i++; continue; }
+        running = b;
+        const n = dataLen(b);
+        emit([b, ...p.slice(i + 1, i + 1 + n)]);
+        i += 1 + n;
+      } else if (running) {                                 // running status
+        const n = dataLen(running);
+        emit([running, ...p.slice(i, i + n)]);
+        i += n;
+      } else i++;
+    }
+  }
+
+  // ---------- write queue ----------
+  const q = [];
+  let writing = false;
+  async function pump() {
+    if (writing) return;
+    writing = true;
+    while (q.length && chr) {
+      const pkt = q.shift();
+      try {
+        if (chr.writeValueWithoutResponse) await chr.writeValueWithoutResponse(pkt);
+        else await chr.writeValue(pkt);
+        txCount++;
+      } catch (e) { lastErr = 'write: ' + e.message; }
+    }
+    writing = false;
+  }
+  function send(bytes) {
+    if (!chr) return false;
+    encode(Array.from(bytes)).forEach(p => q.push(p));
+    pump();
+    return true;
+  }
+
+  // ---------- connect ----------
+  async function connect() {
+    if (!supported()) throw new Error('Bluetooth needs Chrome on Android/PC and a secure (https) page');
+    lastErr = '';
+    device = await navigator.bluetooth.requestDevice({
+      filters: [{ services: [SVC] }, { namePrefix: 'SEQTRAK' }],
+      optionalServices: [SVC],
+    });
+    device.addEventListener('gattserverdisconnected', () => { chr = null; if (onState) onState(false); });
+    const server = await device.gatt.connect();
+    const svc = await server.getPrimaryService(SVC);
+    chr = await svc.getCharacteristic(CHR);
+    chr.addEventListener('characteristicvaluechanged', e => decode(new Uint8Array(e.target.value.buffer)));
+    await chr.startNotifications();
+    if (onState) onState(true);
+    return device.name || 'SEQTRAK (Bluetooth)';
+  }
+  function disconnect() { try { device && device.gatt.connected && device.gatt.disconnect(); } catch (e) {} chr = null; }
+
+  return {
+    supported, connect, disconnect, send,
+    isConnected: () => !!chr,
+    name: () => (device && device.name) || 'SEQTRAK (Bluetooth)',
+    diag: () => `BLUETOOTH ${chr ? 'connected to ' + (device && device.name) : 'not connected'} | in: ${rxCount} | out pkts: ${txCount}${lastErr ? ' | ' + lastErr : ''}`,
+    set onMessage(f) { onMessage = f; },
+    set onState(f) { onState = f; },
+    _encode: encode, _decode: decode,   // for tests
+  };
+})();
