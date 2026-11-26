@@ -462,7 +462,7 @@
     const k = n - E.first;
     if (k < 0 || k >= E.list.length) return;
     curPreset[p] = n;
-    SEQTRAK.loadSound(p, 63, (n - 1) >> 7, (n - 1) & 127).forEach(m => MIDIManager.send(m));
+    { const ms = SEQTRAK.loadSound(p, 63, (n - 1) >> 7, (n - 1) & 127); const a = new Uint8Array(ms.reduce((s,m)=>s+m.length,0)); let o=0; ms.forEach(m=>{a.set(m,o);o+=m.length;}); MIDIManager.send(a); }
     setSoundName(p, E.list[k][0]);
     onSoundChanged(p);            // reads back the number + name, puts your saved edits back, then the knobs follow
   }
@@ -738,7 +738,7 @@
       const slot = c - base;
       const tri = c < 4096 ? [c >> 7, c & 127] : (slot >= 0 ? [32 + (slot >> 7), slot & 127] : null);
       if (!tri) { base = c; continue; }
-      SEQTRAK.loadSound(p, 63, tri[0], tri[1]).forEach(m => MIDIManager.send(m));
+      { const ms = SEQTRAK.loadSound(p, 63, tri[0], tri[1]); const a = new Uint8Array(ms.reduce((s,m)=>s+m.length,0)); let o=0; ms.forEach(m=>{a.set(m,o);o+=m.length;}); MIDIManager.send(a); }
       await sleep(280);
       const d = await askRetry(SEQTRAK.CURRENT_SOUND(p), 600, 3);
       if (!d || d.length < 2) continue;
@@ -1828,13 +1828,31 @@
     loadChain = loadChain.then(run, run);
     return loadChain.then(ok => (tok === loadTok ? ok : null));
   }
+  // The M1 sounds sit at different numbers on each SEQTRAK (first unit 4210-4309, second unit 4096-4195).
+  // Try the place that worked last, then the other, and check the NAME that landed on the track.
+  const M1_STARTS = [4210, 4096], M1START_KEY = 'fbM1Start';
+  let m1Start = parseInt(localStorage.getItem(M1START_KEY), 10) || 4210;
+  const nameKey = s => String(s || '').replace(/[^\x20-\x7e]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+  async function queueLoadM1(p, sound) {
+    const order = [m1Start].concat(M1_STARTS.filter(x => x !== m1Start));
+    for (const st of order) {
+      const ok = await queueLoad(p, st + sound.id);
+      if (ok === null) return null;
+      if (!ok) continue;
+      await fetchName(p);
+      if (nameKey(soundNames[p]) !== nameKey(sound.name)) continue;
+      if (st !== m1Start) { m1Start = st; try { localStorage.setItem(M1START_KEY, String(st)); } catch (e) {} }
+      return true;
+    }
+    return false;
+  }
   learnBtn.textContent = 'CHECK M1';
   learnBtn.addEventListener('click', async () => {
     if (!MIDIManager.isConnected()) { learnStatus.textContent = 'Connect to the SEQTRAK first'; return; }
     const p = m1Target, was = curSound[p];
     learnStatus.textContent = 'Checking the M1 sounds on the SEQTRAK...';
-    const first = await queueLoad(p, M1_SOUNDS.getById(0).content);
-    const last = await queueLoad(p, M1_SOUNDS.getById(99).content);
+    const first = await queueLoadM1(p, M1_SOUNDS.getById(0));
+    const last = await queueLoadM1(p, M1_SOUNDS.getById(99));
     learnStatus.textContent = first && last ? 'All 100 M1 sounds found on the SEQTRAK' : 'The M1 sounds were not found where expected - are they still on this SEQTRAK?';
     if (was != null) await queueLoad(p, was);
     soundLoaded(p);
@@ -1847,7 +1865,7 @@
     const p = m1Target;
     if (!MIDIManager.isConnected()) { m1LoadedName.textContent = `${sound.name} - connect the SEQTRAK`; return; }
     m1LoadedName.textContent = `${sound.name} → ${trackShort(p)}`;
-    const ok = await queueLoad(p, sound.content);
+    const ok = await queueLoadM1(p, sound);
     if (ok === null) return;                                 // a newer pick took over
     if (!ok) m1LoadedName.textContent = `${sound.name}: the SEQTRAK loaded something else - tap CHECK M1`;
     await soundLoaded(p);
@@ -1965,7 +1983,7 @@
     libLoadedKey = bank.name + '#' + k;
     m1LoadedName.textContent = `${d.name} (${bank.name}) → ${trackShort(part)}`;
     renderLib();
-    const ok = await queueLoad(part, ms.content);
+    const ok = await queueLoadM1(part, ms);
     if (ok === null) return;
     if (!ok) { libInfo.textContent = `${d.name}: couldn't load "${ms.name}" on the SEQTRAK - tap CHECK M1 on the PLAY tab.`; return; }
     M1Lib.paramsFor(d, part).forEach(([def, v]) => sendDefRaw(def, v));
