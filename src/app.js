@@ -1,5 +1,5 @@
 /* ============================================
-   FULLBAN SEQ-TRAK — Main App v9k
+   FULLBAN SEQ-TRAK — Main App v9l
    MAIN MIX (mixer + sound), LAUNCH + SEQ (clips, 64 pads, chords, piano roll), DX, FX, M-ONE
    ============================================ */
 
@@ -855,6 +855,9 @@
   const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
   const noteName = n => NOTE_NAMES[n % 12] + (Math.floor(n / 12) - 2);          // Yamaha: 60 = C3
   const isDrumPart = p => !usesRoll(p);
+  // v9l: where a step starts in a roll's event time. Drum rolls (parts 0-6) use the step CENTRE (+60, checked on hardware);
+  // synth rolls (parts 7-10) use the step line itself (+0) - read off notes Chris recorded on SYNTH 1, 27 Nov.
+  const rollOff = p => (p >= 7 ? 0 : 60);
   const TPS = 120;                                                               // ticks per 16th step
 
   // ---- chips ----
@@ -1125,7 +1128,7 @@
     if (rollEvents[p] === null) return;
     const here = stepContents(p, s) || [];
     const mine = here.find(e => e.note === pickNote);
-    const add = { time: s * TPS + 60, note: pickNote, vel: 100, gate: TPS };
+    const add = { time: s * TPS + rollOff(p), note: pickNote, vel: 100, gate: TPS };
     if (seqMode === 'poly') { if (mine) rollEdit(p, [mine], []); else rollEdit(p, [], [add]); }
     else if (mine && here.length === 1) rollEdit(p, here, []);      // MONO: same note again = clear
     else rollEdit(p, here, [add]);                                  // MONO: one note per pad
@@ -1172,7 +1175,7 @@
     const p = seqTrack;
     const end = step + lenSteps;
     const clash = (rollEvents[p] || []).filter(e => { const s = Math.floor(e.time / TPS); return s >= step && s < end; });
-    rollEdit(p, clash, notes.map(n => ({ time: step * TPS + 60, note: n, vel: 100, gate: lenSteps * TPS - 10 })));
+    rollEdit(p, clash, notes.map(n => ({ time: step * TPS + rollOff(p), note: n, vel: 100, gate: lenSteps * TPS - 10 })));
   }
   // ---- the SEQTRAK's own chord mode: 7 chords (up to 4 notes each) per scale, per track (SYNTH 1/2, DX) ----
   const proj = { scale: 0, key: 0 };                      // project scale 30 40 7E (0-7), key 30 40 7F (0-11)
@@ -1353,7 +1356,7 @@
     for (let s = 0; s < seqLen; s += sto.len) {
       if (Math.random() >= dens * (s % 4 === 0 ? 1.4 : 1)) continue;
       const n = pool[Math.floor(Math.random() * pool.length)] + shift + 12 * Math.floor(Math.random() * sto.octaves);
-      add.push({ time: s * TPS + 60, note: Math.max(0, Math.min(127, n)), vel: 70 + Math.floor(Math.random() * 50), gate: sto.len * TPS - 10 });
+      add.push({ time: s * TPS + rollOff(p), note: Math.max(0, Math.min(127, n)), vel: 70 + Math.floor(Math.random() * 50), gate: sto.len * TPS - 10 });
     }
     rollEdit(p, rollEvents[p] || [], add);
   }
@@ -1435,7 +1438,7 @@
     const selEvs = () => evs.filter(e => pr.sel.has(e.idx));
     const moveSel = (dt, dn) => { const s = selEvs(); if (!s.length) return; pr.sel.clear(); rollEdit(p, s, s.map(e => ({ time: Math.min(total - 1, Math.max(0, e.time + dt)), note: Math.min(127, Math.max(0, e.note + dn)), vel: e.vel, gate: e.gate }))); };
     btn('-12', () => moveSel(0, -12)); btn('-1', () => moveSel(0, -1)); btn('+1', () => moveSel(0, 1)); btn('+12', () => moveSel(0, 12));
-    btn('QUANTIZE', () => { const s = selEvs(); if (!s.length) return; pr.sel.clear(); rollEdit(p, s, s.map(e => ({ time: Math.round((e.time - 60) / pr.grid) * pr.grid + 60, note: e.note, vel: e.vel, gate: e.gate }))); });
+    btn('QUANTIZE', () => { const s = selEvs(); if (!s.length) return; pr.sel.clear(); rollEdit(p, s, s.map(e => ({ time: Math.round((e.time - rollOff(p)) / pr.grid) * pr.grid + rollOff(p), note: e.note, vel: e.vel, gate: e.gate }))); });
     btn('ALL', () => { evs.forEach(e => pr.sel.add(e.idx)); renderSeq(); });
     btn('DELETE', () => { const s = selEvs(); pr.sel.clear(); if (s.length) rollEdit(p, s, []); }, 'danger');
     wrap.appendChild(tb);
@@ -1460,7 +1463,7 @@
     evs.forEach(e => {
       if (e.note < pr.lowest || e.note > top || e.time >= total) return;
       const d = document.createElement('div'); d.className = 'pr-note' + (pr.sel.has(e.idx) ? ' sel' : '');
-      d.style.left = pct(e.time - 60 < 0 ? e.time : e.time - 60); d.style.width = `calc(${pct(Math.min(e.gate, total - e.time + 60))} - 2px)`;
+      d.style.left = pct(e.time - rollOff(p) < 0 ? e.time : e.time - rollOff(p)); d.style.width = `calc(${pct(Math.min(e.gate, total - e.time + rollOff(p)))} - 2px)`;
       d.style.top = ((top - e.note) / H * 100) + '%'; d.style.height = (100 / H) + '%';
       d.style.setProperty('--kc', tk.color); d.style.opacity = 0.45 + 0.55 * e.vel / 127;
       d.innerHTML = '<span></span><em></em>';
@@ -1485,7 +1488,7 @@
         return;
       }
       if (pr.tool !== 'draw') { pr.sel.clear(); renderSeq(); return; }
-      const t = Math.floor(x * total / pr.grid) * pr.grid + 60;
+      const t = Math.floor(x * total / pr.grid) * pr.grid + rollOff(p);
       const n = snapPitch(top - Math.floor(y * H));
       previewNotes([n], p, 200);
       rollEdit(p, [], [{ time: Math.min(t, total - 1), note: n, vel: pr.vel, gate: pr.len - 10 }]);
@@ -1522,7 +1525,7 @@
     evs.forEach(e => {
       if (e.time >= total) return;
       const b = document.createElement('div'); b.className = 'pr-vbar' + (pr.sel.has(e.idx) ? ' sel' : '');
-      b.style.left = pct(Math.max(0, e.time - 60)); b.style.height = (e.vel / 127 * 100) + '%';
+      b.style.left = pct(Math.max(0, e.time - rollOff(p))); b.style.height = (e.vel / 127 * 100) + '%';
       b.style.setProperty('--kc', tk.color);
       b.title = 'velocity ' + e.vel;
       let vd = null;
