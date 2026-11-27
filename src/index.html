@@ -31,6 +31,8 @@
       <button class="tab" data-page="dx">DX</button>
       <button class="tab" data-page="fx">FX</button>
       <button class="tab" data-page="m1">M-ONE</button>
+      <button class="tab" data-page="viz">VISUALS</button>
+      <button class="tab" data-page="set">SETTINGS</button>
     </nav>
 
     <!-- MIDI overlay -->
@@ -96,6 +98,11 @@
             <button class="len-btn" data-len="32">32</button>
             <button class="len-btn" data-len="64">64</button>
             <button class="len-btn" data-len="128">128</button>
+          </div>
+          <div class="seq-edit">
+            <button class="edit-btn" id="seq-undo" disabled>&#8630; UNDO</button>
+            <button class="edit-btn danger" id="seq-clear-track">CLEAR TRACK</button>
+            <button class="edit-btn danger" id="seq-clear-all">CLEAR ALL</button>
           </div>
           <div class="seq-bpm">
             <label>BPM</label>
@@ -245,6 +252,12 @@
         </div>
       </div>
     </section>
+
+    <!-- SETTINGS: the unit's own system settings (settings.js) -->
+    <!-- VISUALS: track bars that follow the notes the unit plays (viz.js) -->
+    <section id="page-viz" class="page hidden"></section>
+
+    <section id="page-set" class="page hidden"></section>
   </div>
 
   <script src="fx-types.js"></script>
@@ -256,6 +269,8 @@
   <script src="ble-midi.js"></script>
   <script src="midi.js"></script>
   <script src="app.js"></script>
+  <script src="settings.js"></script>
+  <script src="viz.js"></script>
   <script>
     if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
     // full screen on the tablet: hide Android's status bar on the first tap (browsers only allow it after a touch)

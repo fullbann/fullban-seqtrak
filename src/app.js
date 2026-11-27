@@ -1,5 +1,5 @@
 /* ============================================
-   FULLBAN SEQ-TRAK — Main App v9d
+   FULLBAN SEQ-TRAK — Main App v9k
    MAIN MIX (mixer + sound), LAUNCH + SEQ (clips, 64 pads, chords, piano roll), DX, FX, M-ONE
    ============================================ */
 
@@ -908,16 +908,110 @@
     }
   }
   // edits on roll tracks: delete (highest index first) + add, then re-read the list (indices shift)
-  async function rollEdit(p, removeEvents, addNotes) {
-    if (busy) return;
-    setBusy(true, 'Writing to the SEQTRAK...');
+  async function rollWrite(p, removeEvents, addNotes) {
     [...removeEvents].sort((x, y) => y.idx - x.idx).forEach(e => MIDIManager.send(SEQTRAK.ROLL.del(p, e.idx)));
     addNotes.forEach(n => MIDIManager.send(SEQTRAK.ROLL.addNote(p, Math.max(0, Math.round(n.time)), n.note, n.vel || 100, Math.max(1, Math.round(n.gate || TPS)))));
     await new Promise(r => setTimeout(r, 150 + 10 * (removeEvents.length + addNotes.length)));
     await readRoll(p);
+  }
+  async function rollEdit(p, removeEvents, addNotes) {
+    if (busy) return;
+    pushUndo('note edit on track ' + (p + 1), [snapTrack(p)]);
+    setBusy(true, 'Writing to the SEQTRAK...');
+    await rollWrite(p, removeEvents, addNotes);
     setBusy(false, '');
     renderSeq();
   }
+
+  // ---- UNDO + CLEAR TRACK / CLEAR ALL (v9h) ----
+  // UNDO puts back what the app itself changed (pads, chords, piano roll, ROLL, clears). It keeps a copy of the track's
+  // pattern from before each change. Edits made on the SEQTRAK's own keys are not seen. Drum step locks are not kept.
+  const undoStack = [];
+  const UNDO_MAX = 30;
+  const undoBtn = document.getElementById('seq-undo');
+  function paintUndo() {
+    if (!undoBtn) return;
+    undoBtn.disabled = !undoStack.length;
+    undoBtn.title = undoStack.length ? 'Undo: ' + undoStack[undoStack.length - 1].label : 'Nothing to undo';
+  }
+  function snapTrack(p) {
+    if (isDrumPart(p)) return { p, pat: patSel[p], drum: true, steps: steps[p].map(v => (v ? { note: v.note, vel: v.vel, gate: v.gate } : v)) };
+    if (rollEvents[p] === null) return null;
+    return { p, pat: patSel[p], drum: false, notes: rollEvents[p].map(e => ({ time: e.time, note: e.note, vel: e.vel, gate: e.gate })) };
+  }
+  function pushUndo(label, snaps) {
+    snaps = snaps.filter(Boolean);
+    if (!snaps.length) return;
+    undoStack.push({ label, snaps });
+    if (undoStack.length > UNDO_MAX) undoStack.shift();
+    paintUndo();
+  }
+  async function restoreSnap(sn) {
+    const p = sn.p;
+    if (!sn.drum) { await rollWrite(p, rollEvents[p] || [], sn.notes); return; }
+    for (let s = 0; s < 128; s++) {
+      const want = sn.steps[s], cur = steps[p][s];
+      if (want === null) continue;                                   // was never read: leave it alone
+      if (cur !== null && !want && !cur) continue;
+      if (want && cur && want.note === cur.note && want.vel === cur.vel && want.gate === cur.gate) continue;
+      if (cur !== false) MIDIManager.send(SEQTRAK.STEP.del(p, s));
+      if (want) MIDIManager.send(SEQTRAK.STEP.add(p, s, want.note, want.vel, want.gate));
+      steps[p][s] = want ? { note: want.note, vel: want.vel, gate: want.gate } : false;
+      await sleep(8);
+    }
+  }
+  async function undoLast() {
+    if (busy) return;
+    const u = undoStack[undoStack.length - 1];
+    if (!u) { seqMsg.textContent = 'Nothing to undo.'; return; }
+    if (!MIDIManager.isConnected()) { seqMsg.textContent = 'Not connected - nothing undone.'; return; }
+    const off = u.snaps.find(sn => patSel[sn.p] !== sn.pat);
+    if (off) { seqMsg.textContent = 'That undo is for pattern ' + (off.pat + 1) + ' on track ' + (off.p + 1) + ' - switch back to it first.'; return; }
+    undoStack.pop();
+    setBusy(true, 'Undoing: ' + u.label + '...');
+    for (const sn of u.snaps) await restoreSnap(sn);
+    await sleep(150);
+    setBusy(false, 'Undone: ' + u.label + '.');
+    paintUndo();
+    readSteps();
+  }
+  // one message per track clears its pattern (01 1p 37, value = pattern slot); notes only, volumes and mutes stay
+  async function clearPatterns(parts, label) {
+    if (busy) return;
+    if (!MIDIManager.isConnected()) { seqMsg.textContent = 'Not connected - nothing cleared.'; return; }
+    readToken++;                                                     // stop any read still running
+    setBusy(true, 'Keeping a copy for UNDO...');
+    const snaps = [];
+    for (const p of parts) {
+      const ps = await askRetry(SEQTRAK.PATTERN_SELECT(p).addr, 450, 2);
+      if (ps && ps.length) patSel[p] = ps[0];
+      if (isDrumPart(p)) {
+        const ln = await askRetry(SEQTRAK.PATTERN_STEPS(p, patSel[p]), 450, 2);
+        const n = ln && ln.length >= 2 ? Math.max(1, Math.min(128, (ln[0] << 7) | ln[1])) : (trackLen[p] || 16);
+        for (let s = 0; s < n; s++) {
+          const d = await askRetry(SEQTRAK.STEP.readAddr(p, s), 450, 2);
+          if (d !== null) steps[p][s] = d.length >= 6 ? { note: d[0], vel: d[1], gate: (d[4] << 7) | d[5] } : false;
+        }
+      } else await readRoll(p);
+      snaps.push(snapTrack(p));
+    }
+    pushUndo(label, snaps);
+    seqMsg.textContent = 'Clearing...';
+    for (const p of parts) {
+      MIDIManager.send(SEQTRAK.buildParam([0x01, 0x10 | p, 0x37], patSel[p]));
+      if (isDrumPart(p)) steps[p].fill(false); else rollEvents[p] = [];
+      await sleep(40);
+    }
+    await sleep(250);
+    setBusy(false, label + ' - done. UNDO puts it back.');
+    readSteps();
+  }
+  if (undoBtn) undoBtn.onclick = undoLast;
+  const clrTrackBtn = document.getElementById('seq-clear-track');
+  if (clrTrackBtn) clrTrackBtn.onclick = () => clearPatterns([seqTrack], 'Clear track ' + (seqTrack + 1));
+  const clrAllBtn = document.getElementById('seq-clear-all');
+  if (clrAllBtn) clrAllBtn.onclick = () => { if (confirm('Clear the pattern now playing on ALL 11 tracks?')) clearPatterns([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 'Clear all tracks'); };
+  paintUndo();
   async function loadTrack() {
     const p = seqTrack;
     if (MIDIManager.isConnected()) {
@@ -1017,6 +1111,7 @@
     b.querySelector('span').textContent = txt;
   }
   function toggleDrum(p, s) {
+    pushUndo('step on track ' + (p + 1), [snapTrack(p)]);
     const st = steps[p][s];
     if (st) MIDIManager.send(SEQTRAK.STEP.del(p, s));
     else MIDIManager.send(SEQTRAK.STEP.add(p, s, 60, 100, TPS));
@@ -1242,6 +1337,7 @@
     const p = seqTrack, dens = sto.density / 100;
     if (!MIDIManager.isConnected() || busy) return;
     if (isDrumPart(p)) {
+      pushUndo('ROLL on track ' + (p + 1), [snapTrack(p)]);
       for (let s = 0; s < seqLen; s++) {
         const want = Math.random() < dens * (s % 4 === 0 ? 1.5 : 1), cur = !!steps[p][s];
         if (want !== cur) { MIDIManager.send(want ? SEQTRAK.STEP.add(p, s, 60, 100, TPS) : SEQTRAK.STEP.del(p, s)); steps[p][s] = want ? { note: 60, vel: 100, gate: TPS } : false; }
@@ -1278,7 +1374,7 @@
     const clr = document.createElement('button'); clr.className = 'chd-clear'; clr.textContent = 'CLEAR PATTERN';
     clr.onclick = () => {
       if (!confirm('Clear this track\'s pattern?')) return;
-      if (drum) { for (let s = 0; s < seqLen; s++) if (steps[p][s]) { MIDIManager.send(SEQTRAK.STEP.del(p, s)); steps[p][s] = false; } renderSeq(); }
+      if (drum) { pushUndo('clear on track ' + (p + 1), [snapTrack(p)]); for (let s = 0; s < seqLen; s++) if (steps[p][s]) { MIDIManager.send(SEQTRAK.STEP.del(p, s)); steps[p][s] = false; } renderSeq(); }
       else rollEdit(p, rollEvents[p] || [], []);
     };
     ctl.appendChild(clr);
@@ -1882,19 +1978,32 @@
   libProgsEl.parentElement.insertBefore(libCatsEl, libProgsEl);
   async function refreshLib() {
     try { libBanks = await M1Lib.allBanks(); } catch (e) { libBanks = []; }
-    // on the PC bridge the user's own bank file is served locally (/private/m1lib): load it once, no file picker
-    const lb = MIDIManager.bridgeURL && MIDIManager.bridgeURL();
-    if (!libBanks.length && !libAutoTried && lb) {
+    // The user's own bank file is served by the bridge / the XL (/private/m1lib). v9j: fetch it whenever this
+    // device has NO banks, FEWER banks than the file had last time, or no note of a finished install (Android can
+    // throw the browser's storage away, and an install cut short used to stay part-done for good).
+    const lb = (MIDIManager.bridgeURL && MIDIManager.bridgeURL()) || (location.protocol === 'http:' ? location.origin : null);
+    let want = 0;
+    try { want = parseInt(localStorage.getItem('fbM1LibCount') || '0', 10) || 0; } catch (e) {}
+    if (lb && !libAutoTried && (!libBanks.length || !want || libBanks.length < want)) {
       libAutoTried = true;
       try {
         const r = await fetch(lb + '/private/m1lib', { cache: 'no-store' });
         if (r.ok) {
-          libStatus.textContent = 'Installing your M1 banks...';
-          await M1Lib.importFiles([new File([await r.arrayBuffer()], 'M1-Library.m1lib')]);
-          libBanks = await M1Lib.allBanks();
+          const buf = await r.arrayBuffer();
+          const u8 = new Uint8Array(buf);
+          const n = (u8[0] === 0x4D && u8[1] === 0x31 && u8[2] === 0x4C && u8[3] === 0x42) ? new DataView(buf).getUint32(4, true) : 0;
+          if (n && libBanks.length < n) {
+            libStatus.textContent = `Installing your M1 banks (${n})...`;
+            await M1Lib.importFiles([new File([buf], 'M1-Library.m1lib')]);
+            libBanks = await M1Lib.allBanks();
+          }
+          if (n && libBanks.length >= n) { try { localStorage.setItem('fbM1LibCount', String(n)); } catch (e) {} }
         }
-      } catch (e) {}
+      } catch (e) { libAutoTried = false; }                       // e.g. bridge not up yet: try again on the next refresh
     }
+    // v9k: ask the browser to KEEP this site's storage (works on the https / installed copy), so the banks are not
+    // thrown away when the tablet runs low on space
+    if (libBanks.length && navigator.storage && navigator.storage.persist) { try { navigator.storage.persist().catch(() => {}); } catch (e) {} }
     const nprog = libBanks.reduce((s, b) => s + b.progs.length, 0);
     libStatus.textContent = libBanks.length ? `${libBanks.length} banks · ${nprog.toLocaleString()} programs on this device` : 'No banks yet - tap IMPORT BANKS and pick your .syx / .m1b / .m1lib files';
     renderLib();
@@ -2029,6 +2138,7 @@
     if (data[0] === 0xF0) {
       const pc = SEQTRAK.parseParamChange(data);
       if (!pc) return;
+      if (window.__fbSettingsIn) window.__fbSettingsIn(pc);        // SETTINGS page (settings.js)
       if (pc.key === 'sx:304076' && pc.data.length >= 2) {
         const bpm = (pc.data[0] << 7) | pc.data[1];
         if (window.__fbTempoReply) window.__fbTempoReply(bpm);
@@ -2058,6 +2168,7 @@
       if (pc.data.length) applyIncoming(pc.key, pc.value, pc.data);
       return;
     }
+    if (window.__fbVizIn) window.__fbVizIn(data);                        // VISUALS page (viz.js)
     const st = data[0] & 0xF0, ch = data[0] & 0x0F;
     if (st === 0xB0) applyIncoming(`cc:${ch}:${data[1]}`, data[2]);
     else if (st === 0xC0 && ch < 11) onSoundChanged(ch);                 // unit changed sound: follow it
