@@ -1152,6 +1152,16 @@ button { touch-action: manipulation; }
 .viz-wrap { flex: 1 1 0; min-height: 0; border: 1px solid var(--fb-border); border-radius: 8px; overflow: hidden; }
 .viz-canvas { display: block; }
 
+
+/* ---- v9n: clip grid shows which clips hold notes ---- */
+.lr-clip.has { background: linear-gradient(180deg, color-mix(in srgb, var(--kc) 55%, #10161f), color-mix(in srgb, var(--kc) 30%, #0a0e14)); color: #fff; border-color: color-mix(in srgb, var(--kc) 80%, #fff); }
+.lr-clip.has.on { background: linear-gradient(180deg, var(--kc), color-mix(in srgb, var(--kc) 60%, #000)); color: #001; }
+.lr-clip.empty { background: #0a0d12; border-color: #151c26; color: transparent; box-shadow: none; }
+.lr-clip.empty.on { border-color: var(--kc); color: #6f7f92; }
+.cg-scan { display: flex; align-items: center; gap: 10px; padding-top: 2px; }
+.cg-scan-btn { border-radius: 7px; border: 1px solid #2d8cf0; background: #111a26; color: #9fd0ff; font-size: 10px; font-weight: 900; letter-spacing: .08em; padding: 5px 10px; cursor: pointer; }
+#clip-scan-msg { font-size: 11px; color: #8fa3b8; }
+
 </style>
 </head>
 <body>
@@ -2847,7 +2857,7 @@ const MIDIManager = (() => {
 </script>
   <script>
 /* ============================================
-   FULLBAN SEQ-TRAK — Main App v9l
+   FULLBAN SEQ-TRAK — Main App v9n
    MAIN MIX (mixer + sound), LAUNCH + SEQ (clips, 64 pads, chords, piano roll), DX, FX, M-ONE
    ============================================ */
 
@@ -4248,7 +4258,41 @@ const MIDIManager = (() => {
     seqBody.querySelectorAll('.mt-row').forEach(r => { const c = r.querySelector(`.mt-cell[data-step="${playStep % trackLen[+r.dataset.track]}"]`); if (c) flash(c); });
     if (line) { line.style.display = 'block'; line.style.left = ((playStep % seqLen) / seqLen * 100) + '%'; }
   }
-  function tick16() { if (!playing) return; playStep++; if (launchVisible()) paintPlayhead(); }
+  // v9m: clip launches wait for the bar line. tick16 notes how long a 16th lasts and, on the last 16th of a bar,
+  // fires the waiting launches most of a step later, so they land just before the downbeat.
+  let lastTickAt = 0, stepMs = 0, playT0 = 0, launchQ = [], launchTimer = null;
+  function tick16() {
+    if (!playing) return;
+    const now = performance.now();
+    if (lastTickAt && now - lastTickAt > 40 && now - lastTickAt < 600) stepMs = now - lastTickAt;
+    lastTickAt = now;
+    playStep++;
+    if (launchQ.length && playStep % 16 === 15 && !launchTimer) launchTimer = setTimeout(flushLaunch, Math.max(0, (stepMs || 115) * 0.72));
+    if (launchVisible()) paintPlayhead();
+  }
+  function flushLaunch() {
+    clearTimeout(launchTimer); launchTimer = null;
+    if (!launchQ.length) return;
+    const list = launchQ; launchQ = [];
+    const msgs = list.map(([p, n]) => SEQTRAK.buildParam(SEQTRAK.PATTERN_SELECT(p).addr, n));
+    if (MIDIManager.bridgeURL && MIDIManager.bridgeURL()) {             // the bridge takes them all in one go
+      const a = new Uint8Array(msgs.reduce((t, m) => t + m.length, 0)); let o = 0; msgs.forEach(m => { a.set(m, o); o += m.length; });
+      MIDIManager.send(a);
+    } else msgs.forEach(m => MIDIManager.send(m));
+    setTimeout(async () => { for (const [p] of list) await confirmPattern(p); }, 300);
+  }
+  function queueLaunch(list) {
+    list.forEach(([p, n]) => { launchQ = launchQ.filter(x => x[0] !== p); launchQ.push([p, n]); });
+    let quant = true; try { quant = localStorage.getItem('fbLaunchQuant') !== '0'; } catch (e) {}
+    if (!playing || !quant) { flushLaunch(); return; }
+    const now = performance.now();
+    if (stepMs && now - lastTickAt < 600) return;                       // clock is arriving: tick16 fires it on the bar
+    if (!playT0) { flushLaunch(); return; }                             // no clock and no start time: launch now
+    const bi = document.getElementById('seq-bpm-input');
+    const bar = 240000 / (Math.max(20, parseInt(bi && bi.value, 10) || 120));
+    clearTimeout(launchTimer);
+    launchTimer = setTimeout(flushLaunch, Math.max(0, bar - ((now - playT0) % bar) - 35));
+  }
   function clockIn(b) {                               // F9 = a 16th from the PC bridge; F8 = raw clock (6 per 16th)
     if (b === 0xF9) tick16();
     else if (++clkCount % 6 === 0) tick16();
@@ -4412,6 +4456,8 @@ const MIDIManager = (() => {
   });
   const recBtn = document.getElementById('seq-rec');
   function setPlaying(v) {
+    if (v && !playing) playT0 = performance.now();
+    if (!v) { playT0 = 0; lastTickAt = 0; }
     playing = v;
     document.querySelectorAll('.seq-play, #seq-play').forEach(b => b.classList.toggle('on', v));
     if (!v && recOn) { recOn = false; recBtn.classList.remove('on'); }
@@ -4488,7 +4534,7 @@ const MIDIManager = (() => {
       const r = document.createElement('div'); r.className = 'cg-row';
       SEQTRAK.TRACKS.forEach((tk, p) => {
         const c = document.createElement('button');
-        c.className = 'lr-clip' + (patSel[p] === n ? ' on' : '');
+        c.className = 'lr-clip' + (patSel[p] === n ? ' on' : '') + (clipHas[p][n] === true ? ' has' : clipHas[p][n] === false ? ' empty' : '');
         c.dataset.track = p; c.dataset.pat = n; c.style.setProperty('--kc', tk.color);
         c.innerHTML = `<span>${n + 1}</span>`;
         c.onclick = () => launchClip(p, n);
@@ -4499,6 +4545,60 @@ const MIDIManager = (() => {
       sb.onclick = () => launchScene(n);
       r.appendChild(sb);
       launchGrid.appendChild(r);
+    }
+    const sr = document.createElement('div'); sr.className = 'cg-scan';
+    sr.innerHTML = '<button class="cg-scan-btn" id="clip-scan">SCAN CLIPS</button><span id="clip-scan-msg"></span>';
+    launchGrid.appendChild(sr);
+    sr.querySelector('#clip-scan').onclick = () => scanClips();
+    paintScanMsg();
+    if (!scanAuto && MIDIManager.isConnected()) { scanAuto = true; setTimeout(() => { if (!playing && !busy) scanClips(); }, 6000); }
+  }
+  // v9n: which clips hold notes (filled like the MPC's clip view, empty ones dimmed). The SEQTRAK only lets a
+  // pattern be read while it is the selected one, so the scan steps every track through its six patterns and
+  // puts the selection back - only while stopped, or you would hear it.
+  const clipHas = Array.from({ length: 11 }, () => new Array(6).fill(null));
+  let scanning = false, scanAuto = false, scanMsg = '';
+  function paintScanMsg() { const m = document.getElementById('clip-scan-msg'); if (m) m.textContent = scanMsg; }
+  function paintHas() {
+    launchGrid.querySelectorAll('.lr-clip').forEach(c => {
+      const v = clipHas[+c.dataset.track][+c.dataset.pat];
+      c.classList.toggle('has', v === true); c.classList.toggle('empty', v === false);
+    });
+  }
+  function sendSelects(list) {
+    const msgs = list.map(([p, n]) => SEQTRAK.buildParam(SEQTRAK.PATTERN_SELECT(p).addr, n));
+    if (MIDIManager.bridgeURL && MIDIManager.bridgeURL()) {
+      const a = new Uint8Array(msgs.reduce((t, m) => t + m.length, 0)); let o = 0; msgs.forEach(m => { a.set(m, o); o += m.length; });
+      MIDIManager.send(a);
+    } else msgs.forEach(m => MIDIManager.send(m));
+  }
+  async function clipHasNotes(p) {
+    if (!isDrumPart(p)) { const d = await askRetry(SEQTRAK.ROLL.readAddr(p, 0), 450, 2); return !!(d && d.length >= 8); }
+    const rs = await Promise.all(Array.from({ length: 16 }, (_, st) => ask(SEQTRAK.STEP.readAddr(p, st), 700)));
+    if (rs.some(d => d && d.length >= 6)) return true;
+    for (let st = 0; st < 16; st++) if (rs[st] === null) { const d = await askRetry(SEQTRAK.STEP.readAddr(p, st), 500, 2); if (d && d.length >= 6) return true; }
+    return false;
+  }
+  async function scanClips() {
+    if (scanning) return;
+    if (!MIDIManager.isConnected()) { scanMsg = 'Connect the SEQTRAK first.'; paintScanMsg(); return; }
+    if (playing) { scanMsg = 'Stop playback first - scanning steps through every pattern.'; paintScanMsg(); return; }
+    scanning = true; ensureMode();
+    const was = patSel.slice();
+    try {
+      for (let n = 0; n < 6 && !playing; n++) {
+        scanMsg = `Scanning row ${n + 1} of 6...`; paintScanMsg();
+        sendSelects(SEQTRAK.TRACKS.map((t, p) => [p, n]));
+        await sleep(380);
+        for (let p = 0; p < 11 && !playing; p++) { clipHas[p][n] = await clipHasNotes(p); }
+        paintHas();
+      }
+      scanMsg = playing ? 'Scan stopped (playback started).' : '';
+    } finally {
+      sendSelects(was.map((n, p) => [p, n]));
+      await sleep(350);
+      scanning = false; paintScanMsg();
+      readSteps();
     }
   }
   function renderLaunch() { renderClips(); renderTrackSel(); }
@@ -4525,15 +4625,14 @@ const MIDIManager = (() => {
   }
   function launchClip(p, n) {
     ensureMode();
-    sendDef(SEQTRAK.PATTERN_SELECT(p), n);
     const c = launchGrid.querySelector(`.lr-clip[data-track="${p}"][data-pat="${n}"]`);
     if (c) c.classList.add('queued');
-    setTimeout(() => confirmPattern(p), 250);
+    queueLaunch([[p, n]]);
   }
   function launchScene(n) {
     ensureMode();
-    SEQTRAK.TRACKS.forEach((t, p) => { sendDef(SEQTRAK.PATTERN_SELECT(p), n); const c = launchGrid.querySelector(`.lr-clip[data-track="${p}"][data-pat="${n}"]`); if (c) c.classList.add('queued'); });
-    setTimeout(async () => { for (let p = 0; p < 11; p++) await confirmPattern(p); }, 250);
+    SEQTRAK.TRACKS.forEach((t, p) => { const c = launchGrid.querySelector(`.lr-clip[data-track="${p}"][data-pat="${n}"]`); if (c) c.classList.add('queued'); });
+    queueLaunch(SEQTRAK.TRACKS.map((t, p) => [p, n]));
   }
   function launchPlaying(v) { document.querySelectorAll('.launch-play').forEach(b => b.classList.toggle('on', v)); }
   onTracks(renderLaunch);
@@ -5003,7 +5102,7 @@ const MIDIManager = (() => {
       else if (pc.addr[0] === 0x01 && pc.addr[1] === 0x33 && pc.addr[2] === 0x01) setTimeout(readTypes, 300);   // a drum track was re-typed
       else if (pc.addr[0] === 0x70 && (pc.addr[1] & 0xF0) === 0x40) {
         const p = pc.addr[1] & 0x0F, st = pc.addr[2], d = pc.data;
-        if (p < 11 && st < 128) { steps[p][st] = d.length >= 6 ? { note: d[0], vel: d[1], gate: (d[4] << 7) | d[5] } : false; paintStep(p, st); }
+        if (p < 11 && st < 128 && !scanning) { steps[p][st] = d.length >= 6 ? { note: d[0], vel: d[1], gate: (d[4] << 7) | d[5] } : false; paintStep(p, st); }
       }
       if (pc.key === 'sx:011020' && pc.data.length) {                       // SequencerStatus: 1 playing / 0 stopped
         const on = !!pc.data[0];

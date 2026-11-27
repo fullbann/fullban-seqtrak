@@ -1140,3 +1140,13 @@ button { touch-action: manipulation; }
 .viz-head { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; flex-shrink: 0; }
 .viz-wrap { flex: 1 1 0; min-height: 0; border: 1px solid var(--fb-border); border-radius: 8px; overflow: hidden; }
 .viz-canvas { display: block; }
+
+
+/* ---- v9n: clip grid shows which clips hold notes ---- */
+.lr-clip.has { background: linear-gradient(180deg, color-mix(in srgb, var(--kc) 55%, #10161f), color-mix(in srgb, var(--kc) 30%, #0a0e14)); color: #fff; border-color: color-mix(in srgb, var(--kc) 80%, #fff); }
+.lr-clip.has.on { background: linear-gradient(180deg, var(--kc), color-mix(in srgb, var(--kc) 60%, #000)); color: #001; }
+.lr-clip.empty { background: #0a0d12; border-color: #151c26; color: transparent; box-shadow: none; }
+.lr-clip.empty.on { border-color: var(--kc); color: #6f7f92; }
+.cg-scan { display: flex; align-items: center; gap: 10px; padding-top: 2px; }
+.cg-scan-btn { border-radius: 7px; border: 1px solid #2d8cf0; background: #111a26; color: #9fd0ff; font-size: 10px; font-weight: 900; letter-spacing: .08em; padding: 5px 10px; cursor: pointer; }
+#clip-scan-msg { font-size: 11px; color: #8fa3b8; }
